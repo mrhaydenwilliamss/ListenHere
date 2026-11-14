@@ -1,16 +1,18 @@
 // Listen Here — /api/release
-// Step 2 of a scan: find the record in MusicBrainz and return its ordered tracklist.
+// Finds a record in MusicBrainz and returns its ordered tracklist.
 // Use one of:
 //   ?barcode=5400863191467
-//   ?artist=Chic&album=C'est Chic&catno=SD 19209
-//   ?id=<MusicBrainz release id>
+//   ?artist=Chic&album=C'est Chic&catno=SD 19209     best single match
+//   ?id=<MusicBrainz release id>                      a specific release
+//   ?list=1&artist=Chic&album=C'est Chic              several candidates to choose from (text search)
 
 const MB = 'https://musicbrainz.org/ws/2';
-const UA = 'ListenHere/1.0 ( https://listenhere-dun.vercel.app )'; // MusicBrainz asks every app to identify itself
+const UA = 'ListenHere/1.1 ( https://listenhere-dun.vercel.app )'; // MusicBrainz asks every app to identify itself
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const clean = s => String(s || '').replace(/["\\]/g, ' ').trim();
+const clean = s => String(s || '').replace(/["\\():\[\]{}^~*?!+\-&|/]/g, ' ').replace(/\s+/g, ' ').trim();
 const isVinyl = rel => (rel.media || []).some(m => /vinyl/i.test(m.format || ''));
+const artistOf = rel => (rel['artist-credit'] || []).map(a => a.name + (a.joinphrase || '')).join('');
 
 async function mb(path) {
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -22,40 +24,76 @@ async function mb(path) {
   throw new Error('MusicBrainz is busy, try again');
 }
 
+function textQueries(artist, album) {
+  const a = clean(artist), t = clean(album), q = [];
+  if (t && a) q.push(`release:"${t}" AND artist:"${a}"`, `release:(${t}) AND artist:(${a})`, `${t} ${a}`);
+  else if (t) q.push(`release:"${t}"`, `release:(${t})`);
+  else if (a) q.push(`artist:"${a}"`);
+  return q;
+}
+
 async function search(queries) {
   for (const q of queries) {
     const j = await mb(`/release?query=${encodeURIComponent(q)}&fmt=json&limit=15`);
     const list = (j.releases || []).filter(r => (r.score || 0) >= 80);
     // Prefer an official vinyl release, then any vinyl, then the best match
     const pick = list.find(r => isVinyl(r) && r.status === 'Official') || list.find(isVinyl) || list[0];
-    if (pick) return pick.id;
+    if (pick) return { id: pick.id, score: pick.score };
   }
   return null;
 }
 
+async function candidates(artist, album) {
+  const seen = new Set(), out = [];
+  for (const q of textQueries(artist, album)) {
+    const j = await mb(`/release?query=${encodeURIComponent(q)}&fmt=json&limit=25`);
+    for (const r of j.releases || []) {
+      const label = (r['label-info'] || [])[0] || {};
+      const c = {
+        id: r.id, title: r.title, artist: artistOf(r), year: (r.date || '').slice(0, 4), country: r.country || '',
+        format: [...new Set((r.media || []).map(m => m.format).filter(Boolean))].join(', '),
+        label: label.label?.name || '', catno: label['catalog-number'] || '', score: r.score || 0
+      };
+      // One row per distinct pressing description, best matches first
+      const key = [c.title, c.artist, c.year, c.format, c.country].join('|').toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key); out.push(c);
+    }
+    if (out.length >= 8) break;
+  }
+  // Vinyl first among equally good matches
+  out.sort((x, y) => (y.score - x.score) || (/vinyl/i.test(y.format) - /vinyl/i.test(x.format)));
+  return out.slice(0, 12);
+}
+
 module.exports = async (req, res) => {
-  const { barcode, artist, album, catno, id } = req.query;
+  const { barcode, artist, album, catno, id, list } = req.query;
   try {
-    let releaseId = id;
-    if (!releaseId) {
+    if (list) {
+      if (!artist && !album) return res.status(400).json({ error: 'Type a title or an artist' });
+      return res.json({ candidates: await candidates(artist, album) });
+    }
+
+    let hit = id ? { id, score: 100 } : null;
+    if (!hit) {
       const queries = [];
       if (barcode) queries.push(`barcode:${clean(barcode)}`);
       if (catno) queries.push(`catno:"${clean(catno)}"` + (artist ? ` AND artist:"${clean(artist)}"` : ''));
-      if (album && artist) queries.push(`release:"${clean(album)}" AND artist:"${clean(artist)}"`);
-      if (album && artist) queries.push(`${clean(album)} ${clean(artist)}`); // looser, for spelling differences
+      queries.push(...textQueries(artist, album));
       if (!queries.length) return res.status(400).json({ error: 'Nothing to search for' });
-      releaseId = await search(queries);
+      hit = await search(queries);
     }
-    if (!releaseId) return res.json({ found: false });
+    if (!hit) return res.json({ found: false });
 
-    const rel = await mb(`/release/${releaseId}?inc=recordings+artist-credits+labels&fmt=json`);
+    const rel = await mb(`/release/${hit.id}?inc=recordings+artist-credits+labels&fmt=json`);
     const label = (rel['label-info'] || [])[0] || {};
     res.setHeader('Cache-Control', 's-maxage=86400'); // let Vercel remember lookups for a day
     res.json({
       found: true,
+      score: hit.score,
       release: {
         id: rel.id,
-        artist: (rel['artist-credit'] || []).map(a => a.name + (a.joinphrase || '')).join('') || artist || '',
+        artist: artistOf(rel) || artist || '',
         title: rel.title,
         year: (rel.date || '').slice(0, 4),
         label: label.label?.name || '',
