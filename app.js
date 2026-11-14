@@ -461,115 +461,205 @@ async function renderCollection() {
   if (mode === 'crate') renderCrate(); else renderList();
 }
 
-/* ---------- The crate: vertical, layered, the middle record stands up ---------- */
+/* ---------- The crate: vertical Cover Flow with its own scroll physics ----------
+   No browser scrolling here. A small physics engine moves the records:
+   - Dragging: the crate follows the finger 1:1, drawn in the same frame.
+   - Release: velocity is measured over the last ~80 ms of the gesture.
+   - Momentum: iOS-style deceleration (UIScrollView's "normal" rate, 0.998 per ms).
+     We project where that natural glide would end, choose the record nearest to it,
+     and shape the decay so it arrives there exactly — one continuous movement that
+     starts at the finger's speed and comes to rest centred. No separate snap.
+   - A touch during momentum catches the crate where it is.
+   - Past either end the crate stretches with iOS-style resistance and springs back.
+   Only transforms and opacity change per frame (GPU work, no layout). */
 const crate = $('#crate');
-let sleeves = [], focusIndex = -1, ticking = false, metrics = { s: 0, step: 0 };
+let sleeves = [], shades = [], focusIndex = -1;
+let metrics = { s: 0, step: 0, H: 0, max: 0 };
+let pos = 0;               // how far the crate has moved, in px (record i is centred at i × step)
+let anim = null, animFrame = 0;
+
+const DECEL = 0.998;                       // per ms, as iOS
+const PROJECT = DECEL / (1 - DECEL);       // ms: distance = velocity × this
+const SPRING = 0.016;                      // per ms: critically damped settle (~300 ms)
+const P = 1500, MAX_LEAN = 64;             // Cover Flow look
 
 function renderCrate() {
-  crate.innerHTML = '<div class="spacer" data-pad></div>'
-    + entries.map(() => '<div class="snap"></div>').join('')
-    + '<div class="spacer" data-pad></div>'
-    + entries.map((e, i) =>
-      `<button class="sleeve" data-i="${i}" aria-label="${esc(displayArtist(e))} — ${esc(displayTitle(e))}">${coverImg(e, e.release?.artwork || photoUrl(e))}</button>`
-    ).join('');
+  crate.innerHTML = entries.map((e, i) =>
+    `<button class="sleeve" data-i="${i}" style="z-index:${i + 1}" aria-label="${esc(displayArtist(e))} — ${esc(displayTitle(e))}">${coverImg(e, e.release?.artwork || photoUrl(e))}<i class="shade"></i></button>`
+  ).join('');
   sleeves = [...crate.querySelectorAll('.sleeve')];
+  shades = sleeves.map(el => el.querySelector('.shade'));
+  stopAnim();
+  pos = 0; focusIndex = -1;
   layoutCrate();
-  crate.scrollTop = 0;
-  focusIndex = -1;
-  updateCrate();
 }
-// Record i is centred when the crate is scrolled to exactly i × step.
-// Each snap marker is one step tall, with its centre where record i's centre sits.
 function layoutCrate() {
   if (!sleeves.length) return;
-  const H = crate.clientHeight;
-  const s = sleeves[0].offsetWidth, step = s * 0.34; // distance between record centres (they overlap)
-  const padMarkers = H / 2 - step / 2;
-  crate.querySelectorAll('[data-pad]').forEach(p => p.style.height = padMarkers + 'px');
-  crate.querySelectorAll('.snap').forEach(m => m.style.height = step + 'px');
+  const H = crate.clientHeight, s = sleeves[0].offsetWidth, step = s * 0.34;
   const top = H / 2 - s / 2;
-  sleeves.forEach((el, i) => el.style.top = (top + i * step) + 'px');
-  metrics = { s, step };
+  sleeves.forEach(el => el.style.top = top + 'px');
+  const keep = focusIndex >= 0 ? focusIndex : 0;
+  metrics = { s, step, H, max: (sleeves.length - 1) * step };
+  pos = keep * step;
+  draw();
 }
+addEventListener('resize', () => { if (sleeves.length && !crate.closest('[hidden]')) layoutCrate(); });
 
-// Safety net: once scrolling has fully stopped (after a flick's momentum too),
-// make sure a record is exactly centred; if not, glide there quickly.
-let touching = false, settleTimer = 0, glideFrame = 0, gliding = false;
-function glideTo(target) {
-  cancelAnimationFrame(glideFrame);
-  const start = crate.scrollTop, dist = target - start;
-  if (Math.abs(dist) < 1) return;
-  const duration = Math.min(260, 110 + Math.abs(dist) * 0.5); // short hops are near-instant
-  const t0 = performance.now();
-  gliding = true;
-  crate.style.scrollSnapType = 'none'; // our glide, not the browser's slower one
-  const frame = now => {
-    const p = Math.min(1, (now - t0) / duration);
-    crate.scrollTop = start + dist * (1 - Math.pow(1 - p, 3)); // ease-out
-    if (p < 1) glideFrame = requestAnimationFrame(frame);
-    else { gliding = false; crate.style.scrollSnapType = ''; }
-  };
-  glideFrame = requestAnimationFrame(frame);
-}
-function stopGlide() { cancelAnimationFrame(glideFrame); gliding = false; crate.style.scrollSnapType = ''; }
-function settle() {
-  clearTimeout(settleTimer);
-  if (touching || gliding || !sleeves.length || !metrics.step) return;
-  const max = (sleeves.length - 1) * metrics.step;
-  glideTo(Math.max(0, Math.min(max, Math.round(crate.scrollTop / metrics.step) * metrics.step)));
-}
-const SETTLE_AFTER = 90; // ms of stillness before snapping
-crate.addEventListener('touchstart', () => { touching = true; clearTimeout(settleTimer); stopGlide(); }, { passive: true });
-crate.addEventListener('touchend', () => { touching = false; settleTimer = setTimeout(settle, SETTLE_AFTER); }, { passive: true });
-crate.addEventListener('touchcancel', () => { touching = false; settleTimer = setTimeout(settle, SETTLE_AFTER); }, { passive: true });
-crate.addEventListener('scroll', () => { if (gliding) return; clearTimeout(settleTimer); settleTimer = setTimeout(settle, SETTLE_AFTER); }, { passive: true });
-if ('onscrollend' in window) crate.addEventListener('scrollend', () => { if (!gliding) settle(); });
-
-// How the crate stays clean on iPhone:
-// Safari sorts 3D-tilted siblings by their real depth and ignores stacking order when
-// they share a perspective, so a record leaning back from an edge that touches the
-// front record's face can poke through it. So: (1) each record carries its own
-// perspective(), so Safari flattens them one by one; and (2) records above the middle
-// are pushed physically back, a full record-depth per step, so every point of each one is
-// genuinely behind the record in front. Depth order and stacking order then always agree.
-const P = 1500;          // perspective distance, px
-const MAX_LEAN = 64;     // degrees, furthest-back records
-function updateCrate() {
-  ticking = false;
-  if (!sleeves.length) return;
+// Draw every record for the current position. Called once per frame at most.
+// Safari note: each record carries its own perspective(), and records above the middle are
+// pushed back a full record-depth per step, so 3D depth order always matches stacking order.
+function draw() {
   const { s, step } = metrics;
-  const depth = s * Math.sin(MAX_LEAN * Math.PI / 180) + 12; // > any record's own depth when tilted
-  const pos = crate.scrollTop / step;
-  sleeves.forEach((el, i) => {
-    const d = i - pos, a = Math.abs(d);
-    if (d < -5 || d > 3) { el.style.visibility = 'hidden'; return; }
-    el.style.visibility = '';
+  if (!step) return;
+  const depth = s * Math.sin(MAX_LEAN * Math.PI / 180) + 12;
+  const at = pos / step;
+  for (let i = 0; i < sleeves.length; i++) {
+    const el = sleeves[i], d = i - at, a = Math.abs(d);
+    const show = d >= -5 && d <= 3;
+    if (el._show !== show) { el.style.visibility = show ? '' : 'hidden'; el._show = show; }
+    if (!show) continue;
     const k = Math.min(a, 1);
-    let transform;
+    const y = d * step;
     if (d <= 0) {
-      // Above the middle (newer): pushed back, leaning back
       const angle = Math.min(MAX_LEAN, 48 * k + 4 * (a - k));
-      transform = `perspective(${P}px) translateZ(${-depth * a}px) rotateX(${angle}deg)`;
+      el.style.transform = `translate3d(0,${y}px,0) perspective(${P}px) translateZ(${-depth * a}px) rotateX(${angle}deg)`;
+      shades[i].style.opacity = d < -0.05 ? Math.min(a, 4) * 0.07 : 0;
     } else {
-      // Below the middle (older): falling forward, dropped clear of the front record's face
-      transform = `perspective(${P}px) translateY(${s * 0.22 * k}px) translateZ(${k}px) rotateX(${-70 * k}deg)`;
+      el.style.transform = `translate3d(0,${y + s * 0.22 * k}px,0) perspective(${P}px) translateZ(${k}px) rotateX(${-70 * k}deg)`;
+      shades[i].style.opacity = 0;
     }
-    el.style.transform = transform;
-    el.style.zIndex = String(i + 1);
-    el.style.filter = d < -0.3 ? `brightness(${1 - Math.min(a, 4) * 0.06})` : '';
-  });
-  const i = Math.max(0, Math.min(sleeves.length - 1, Math.round(pos)));
-  if (i !== focusIndex) { focusIndex = i; renderInfo(entries[i]); }
+  }
+  const f = Math.max(0, Math.min(sleeves.length - 1, Math.round(at)));
+  if (f !== focusIndex) { focusIndex = f; renderInfo(entries[f]); }
 }
-crate.addEventListener('scroll', () => { if (!ticking) { ticking = true; requestAnimationFrame(updateCrate); } }, { passive: true });
-addEventListener('resize', () => { layoutCrate(); updateCrate(); });
-crate.addEventListener('click', ev => {
-  const b = ev.target.closest('.sleeve');
-  if (!b) return;
-  const i = +b.dataset.i;
-  if (i === focusIndex) openSheet(entries[i]);
-  else glideTo(i * metrics.step);
+
+// iOS rubber band: past an edge, movement is resisted more the further you pull
+const band = (over, dim) => (1 - 1 / (over * 0.55 / dim + 1)) * dim;
+function banded(raw) {
+  if (raw < 0) return -band(-raw, metrics.H);
+  if (raw > metrics.max) return metrics.max + band(raw - metrics.max, metrics.H);
+  return raw;
+}
+function unband(p) { // inverse of banded, so a new drag starts exactly where the crate is
+  const dim = metrics.H, inv = v => (dim / 0.55) * (1 / (1 - v / dim) - 1);
+  if (p < 0) return -inv(Math.min(-p, dim * 0.999));
+  if (p > metrics.max) return metrics.max + inv(Math.min(p - metrics.max, dim * 0.999));
+  return p;
+}
+
+/* ---- animation: momentum decay that lands on a record, or a spring ---- */
+function stopAnim() { cancelAnimationFrame(animFrame); anim = null; }
+function run(a) {
+  stopAnim();
+  anim = { ...a, t0: performance.now(), x0: pos };
+  const frame = now => {
+    const t = now - anim.t0;
+    let x, done = false;
+    if (anim.type === 'decay') {
+      x = anim.x0 + anim.D * (1 - Math.exp(-anim.k * t));
+      if (Math.abs(anim.x0 + anim.D - x) < 0.3) { x = anim.x0 + anim.D; done = true; }
+    } else {
+      const w = anim.w, x0 = anim.x0 - anim.target;
+      x = anim.target + (x0 + (anim.v + w * x0) * t) * Math.exp(-w * t);
+      if (t > 60 && Math.abs(x - anim.target) < 0.3) { x = anim.target; done = true; }
+    }
+    pos = x; draw();
+    if (done) anim = null; else animFrame = requestAnimationFrame(frame);
+  };
+  animFrame = requestAnimationFrame(frame);
+}
+const clampIndex = i => Math.max(0, Math.min(sleeves.length - 1, i));
+function springTo(target, v = 0, w = SPRING) { run({ type: 'spring', target, v, w }); }
+
+// Release with velocity v (px/ms, in crate direction)
+function release(v) {
+  const { step, max } = metrics;
+  if (pos < 0 || pos > max) return springTo(pos < 0 ? 0 : max, v * 0.3);
+  const projected = pos + v * PROJECT;                      // where a natural iOS glide would end
+  let target = clampIndex(Math.round(projected / step)) * step;
+  let D = target - pos;
+  if (Math.abs(v) > 0.08 && Math.sign(D) === Math.sign(v)) {
+    let k = v / D;                                          // decay that starts at the finger's speed and ends on target
+    if (k > 0.02) {                                         // would stop too abruptly: carry on to the next record
+      const next = clampIndex(Math.round(target / step) + Math.sign(v)) * step;
+      if (next !== target) { target = next; D = target - pos; k = v / D; }
+    }
+    if (k <= 0.02) return run({ type: 'decay', D, k: Math.max(k, 0.0012) });
+  }
+  springTo(target, v);                                      // slow release: settle gently
+}
+
+/* ---- touch, pen and mouse ---- */
+let drag = null;
+crate.addEventListener('pointerdown', ev => {
+  if (ev.button > 0 || !sleeves.length) return;
+  const wasMoving = !!anim && (anim.type === 'decay' || Math.abs(anim.target - pos) > 2);
+  stopAnim();                                                // catch the crate where it is
+  drag = { id: ev.pointerId, y0: ev.clientY, raw0: unband(pos), t0: ev.timeStamp, moved: 0,
+           wasMoving, target: ev.target.closest('.sleeve'), samples: [{ t: ev.timeStamp, y: ev.clientY }] };
+  crate.setPointerCapture(ev.pointerId);
 });
+crate.addEventListener('pointermove', ev => {
+  if (!drag || ev.pointerId !== drag.id) return;
+  const events = ev.getCoalescedEvents ? ev.getCoalescedEvents() : [ev];
+  for (const e of events) drag.samples.push({ t: e.timeStamp, y: e.clientY });
+  while (drag.samples.length > 2 && ev.timeStamp - drag.samples[0].t > 100) drag.samples.shift();
+  const dy = ev.clientY - drag.y0;
+  drag.moved = Math.max(drag.moved, Math.abs(dy));
+  pos = banded(drag.raw0 - dy);                              // finger down = crate back, 1:1
+  draw();                                                    // same frame as the touch
+});
+function endDrag(ev) {
+  if (!drag || ev.pointerId !== drag.id) return;
+  const d = drag; drag = null;
+  if (d.moved < 8 && ev.timeStamp - d.t0 < 450) {           // a tap, not a drag
+    if (d.wasMoving) return release(0);                      // a tap on a moving crate just stops it
+    const i = d.target ? +d.target.dataset.i : -1;
+    if (i < 0) return release(0);
+    if (i === focusIndex && Math.abs(pos - i * metrics.step) < 2) return openSheet(entries[i]);
+    return springTo(i * metrics.step);
+  }
+  // velocity over the last ~80 ms; a pause before lifting means no fling
+  const last = d.samples[d.samples.length - 1];
+  const recent = d.samples.filter(p => last.t - p.t <= 80);
+  let v = 0;
+  if (ev.timeStamp - last.t < 60 && recent.length > 1) {
+    const first = recent[0];
+    v = -(last.y - first.y) / Math.max(1, last.t - first.t); // crate moves opposite to the finger
+  }
+  release(Math.max(-8, Math.min(8, v)));
+}
+crate.addEventListener('pointerup', endDrag);
+crate.addEventListener('pointercancel', endDrag);
+crate.addEventListener('click', ev => { // keyboard activation only; taps are handled above
+  if (ev.detail !== 0) return;
+  const b = ev.target.closest('.sleeve');
+  if (b) openSheet(entries[+b.dataset.i]);
+});
+
+/* ---- trackpad and mouse wheel (desktop): the system supplies its own momentum ---- */
+let wheelTimer = 0;
+crate.addEventListener('wheel', ev => {
+  ev.preventDefault();
+  if (!sleeves.length) return;
+  stopAnim();
+  const unit = ev.deltaMode === 1 ? 40 : ev.deltaMode === 2 ? metrics.H : 1;
+  pos = Math.max(-40, Math.min(metrics.max + 40, pos + ev.deltaY * unit));
+  draw();
+  clearTimeout(wheelTimer);
+  wheelTimer = setTimeout(() => springTo(clampIndex(Math.round(pos / metrics.step)) * metrics.step), 120);
+}, { passive: false });
+
+/* ---- keyboard: up / down arrows ---- */
+addEventListener('keydown', ev => {
+  if (view !== 'collection' || mode !== 'crate' || sheetOpen() || !sleeves.length) return;
+  if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+    ev.preventDefault();
+    springTo(clampIndex(focusIndex + (ev.key === 'ArrowDown' ? 1 : -1)) * metrics.step);
+  }
+  if (ev.key === 'Enter' && entries[focusIndex]) openSheet(entries[focusIndex]);
+});
+
 function renderInfo(e) {
   if (!e) return;
   $('#crateInfo').innerHTML = `<div class="a">${esc(displayArtist(e) || '…')}</div>
