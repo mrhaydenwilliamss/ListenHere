@@ -445,24 +445,48 @@ const crate = $('#crate');
 let sleeves = [], focusIndex = -1, ticking = false, metrics = { s: 0, step: 0 };
 
 function renderCrate() {
-  crate.innerHTML = '<div class="spacer" data-pad></div>' + entries.map((e, i) =>
-    `<button class="sleeve" data-i="${i}" aria-label="${esc(displayArtist(e))} — ${esc(displayTitle(e))}">${coverImg(e, e.release?.artwork || photoUrl(e))}</button>`
-  ).join('') + '<div class="spacer" data-pad></div>';
+  crate.innerHTML = '<div class="spacer" data-pad></div>'
+    + entries.map(() => '<div class="snap"></div>').join('')
+    + '<div class="spacer" data-pad></div>'
+    + entries.map((e, i) =>
+      `<button class="sleeve" data-i="${i}" aria-label="${esc(displayArtist(e))} — ${esc(displayTitle(e))}">${coverImg(e, e.release?.artwork || photoUrl(e))}</button>`
+    ).join('');
   sleeves = [...crate.querySelectorAll('.sleeve')];
   layoutCrate();
   crate.scrollTop = 0;
   focusIndex = -1;
   updateCrate();
 }
+// Record i is centred when the crate is scrolled to exactly i × step.
+// Each snap marker is one step tall, with its centre where record i's centre sits.
 function layoutCrate() {
   if (!sleeves.length) return;
+  const H = crate.clientHeight;
   const s = sleeves[0].offsetWidth, step = s * 0.34; // distance between record centres (they overlap)
-  const pad = Math.max(0, (crate.clientHeight - s) / 2);
-  const [top, bottom] = crate.querySelectorAll('[data-pad]');
-  top.style.height = pad + 'px';
-  bottom.style.height = pad + s * 0.66 + 'px';
+  const padMarkers = H / 2 - step / 2;
+  crate.querySelectorAll('[data-pad]').forEach(p => p.style.height = padMarkers + 'px');
+  crate.querySelectorAll('.snap').forEach(m => m.style.height = step + 'px');
+  const top = H / 2 - s / 2;
+  sleeves.forEach((el, i) => el.style.top = (top + i * step) + 'px');
   metrics = { s, step };
 }
+
+// Safety net: once scrolling has fully stopped (after a flick's momentum too),
+// make sure a record is exactly centred; if not, glide to the nearest one.
+let touching = false, settleTimer = 0;
+function settle() {
+  clearTimeout(settleTimer);
+  if (touching || !sleeves.length || !metrics.step) return;
+  const max = (sleeves.length - 1) * metrics.step;
+  const target = Math.max(0, Math.min(max, Math.round(crate.scrollTop / metrics.step) * metrics.step));
+  if (Math.abs(crate.scrollTop - target) > 1) crate.scrollTo({ top: target, behavior: 'smooth' });
+}
+crate.addEventListener('touchstart', () => { touching = true; clearTimeout(settleTimer); }, { passive: true });
+crate.addEventListener('touchend', () => { touching = false; settleTimer = setTimeout(settle, 180); }, { passive: true });
+crate.addEventListener('touchcancel', () => { touching = false; settleTimer = setTimeout(settle, 180); }, { passive: true });
+crate.addEventListener('scroll', () => { clearTimeout(settleTimer); settleTimer = setTimeout(settle, 180); }, { passive: true });
+if ('onscrollend' in window) crate.addEventListener('scrollend', () => setTimeout(settle, 30));
+
 // How the crate stays clean on iPhone:
 // Safari sorts 3D-tilted siblings by their real depth and ignores stacking order when
 // they share a perspective, so a record leaning back from an edge that touches the

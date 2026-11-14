@@ -197,15 +197,18 @@ a { color: inherit; text-decoration: none; }
   transform-style: flat; scrollbar-width: none;
 }
 .crate::-webkit-scrollbar { display: none; }
+/* Records sit on top of a column of still, invisible snap markers (one per record),
+   so snapping never depends on records that are tilting and moving */
 .sleeve {
-  display: block; position: relative;
-  width: var(--s); height: var(--s); margin: 0 auto calc(var(--s) * -0.66);
-  scroll-snap-align: center; transform-origin: 50% 100%;
+  display: block; position: absolute; left: 50%;
+  width: var(--s); height: var(--s); margin-left: calc(var(--s) / -2);
+  transform-origin: 50% 100%;
   will-change: transform; background: var(--paper-2);
   backface-visibility: hidden;
 }
 .sleeve img { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
-.crate .spacer { height: 1px; }
+.crate .spacer, .crate .snap { pointer-events: none; }
+.crate .snap { scroll-snap-align: center; }
 .typo {
   position: absolute; inset: 0; padding: 10%; display: flex; flex-direction: column; justify-content: flex-end;
   background: var(--ink); color: var(--paper);
