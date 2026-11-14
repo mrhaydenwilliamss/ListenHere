@@ -290,8 +290,20 @@ a { color: inherit; text-decoration: none; }
   position: absolute; left: 0; right: 0; bottom: var(--zone); height: 108px;
   padding: 14px 20px; border-top: 1px solid var(--ink); border-bottom: 1px solid var(--ink); background: var(--paper); text-align: center;
 }
-.crate-info .a { font-size: 24px; font-weight: 800; font-stretch: 70%; text-transform: uppercase; line-height: 1; }
-.crate-info .t { font-size: 18px; font-stretch: 75%; text-transform: uppercase; margin-top: 2px; }
+.crate-info .a { font-size: 24px; font-weight: 800; font-stretch: 70%; text-transform: uppercase; line-height: 1.05; }
+.crate-info .t { font-size: 18px; font-stretch: 75%; text-transform: uppercase; margin-top: 2px; line-height: 1.15; }
+/* Always one line. Too long? Scroll like the lock screen (see app.js). */
+.crate-info .a, .crate-info .t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.crate-info .marquee {
+  text-overflow: clip; text-align: left; margin: 0 -16px; padding: 0 16px;
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
+          mask-image: linear-gradient(to right, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
+}
+.marquee .mq { display: inline-flex; will-change: transform; }
+.marquee .mq .gap { display: inline-block; width: 48px; }
+@media (prefers-reduced-motion: reduce) {
+  .crate-info .marquee { text-overflow: ellipsis; }
+}
 .crate-info .w { color: var(--quiet); margin-top: 8px; }
 
 /* ---------- List ---------- */

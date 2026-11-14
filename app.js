@@ -701,7 +701,30 @@ function renderInfo(e) {
   $('#crateInfo').innerHTML = `<div class="a">${esc(displayArtist(e) || '…')}</div>
     <div class="t">${esc(displayTitle(e))}</div>
     <div class="w mono">${esc(e.sample ? 'Sample record' : when(e.scannedAt))}</div>`;
+  $('#crateInfo').querySelectorAll('.a, .t').forEach(marquee);
 }
+
+// Lock-screen style: a line too long to fit holds, then scrolls left and loops seamlessly
+const MQ_SPEED = 40, MQ_GAP = 48, MQ_HOLD = 2; // px per second, px between repeats, seconds paused each loop
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+function marquee(el) {
+  const text = el.textContent;
+  el.classList.add('marquee');
+  el.innerHTML = `<span class="mq"><span>${esc(text)}</span></span>`;
+  const inner = el.firstChild, one = inner.firstChild;
+  const room = el.clientWidth - parseFloat(getComputedStyle(el).paddingLeft) - parseFloat(getComputedStyle(el).paddingRight);
+  const w = one.getBoundingClientRect().width;
+  if (w <= room + 1) { el.classList.remove('marquee'); el.textContent = text; return; } // fits: stays still and centred
+  inner.insertAdjacentHTML('beforeend', `<span class="gap"></span><span aria-hidden="true">${esc(text)}</span>`);
+  if (reduceMotion.matches) return;
+  const shift = w + MQ_GAP, dur = shift / MQ_SPEED + MQ_HOLD;
+  inner.animate([
+    { transform: 'translateX(0)', offset: 0 },
+    { transform: 'translateX(0)', offset: MQ_HOLD / dur },         // pause on the start
+    { transform: `translateX(${-shift}px)`, offset: 1 }            // second copy lands exactly where the first began
+  ], { duration: dur * 1000, iterations: Infinity, easing: 'linear' });
+}
+
 $('#crateInfo').onclick = () => entries[focusIndex] && openSheet(entries[focusIndex]);
 
 /* ---------- The list: search as you type, sort, A–Z index, swipe left to delete ---------- */
@@ -739,7 +762,8 @@ function renderList() {
   const alpha = sortBy !== 'date';
   listEl.innerHTML = shown.map(e => {
     const r = e.release || {};
-    const meta = [r.year, r.label, r.format].filter(Boolean).join(' · ');
+    // sorted by Date: show when it was scanned, so the order makes sense at a glance
+    const meta = sortBy === 'date' ? when(e.scannedAt) : [r.year, r.label, r.format].filter(Boolean).join(' · ');
     const letter = alpha ? letterOf(sortBy === 'title' ? displayTitle(e) : displayArtist(e)) : '';
     return `<li data-letter="${letter}"><div class="swipe">
       <button class="rowmain" data-open="${esc(e.id)}">
