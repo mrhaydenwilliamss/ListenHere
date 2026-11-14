@@ -472,20 +472,37 @@ function layoutCrate() {
 }
 
 // Safety net: once scrolling has fully stopped (after a flick's momentum too),
-// make sure a record is exactly centred; if not, glide to the nearest one.
-let touching = false, settleTimer = 0;
+// make sure a record is exactly centred; if not, glide there quickly.
+let touching = false, settleTimer = 0, glideFrame = 0, gliding = false;
+function glideTo(target) {
+  cancelAnimationFrame(glideFrame);
+  const start = crate.scrollTop, dist = target - start;
+  if (Math.abs(dist) < 1) return;
+  const duration = Math.min(260, 110 + Math.abs(dist) * 0.5); // short hops are near-instant
+  const t0 = performance.now();
+  gliding = true;
+  crate.style.scrollSnapType = 'none'; // our glide, not the browser's slower one
+  const frame = now => {
+    const p = Math.min(1, (now - t0) / duration);
+    crate.scrollTop = start + dist * (1 - Math.pow(1 - p, 3)); // ease-out
+    if (p < 1) glideFrame = requestAnimationFrame(frame);
+    else { gliding = false; crate.style.scrollSnapType = ''; }
+  };
+  glideFrame = requestAnimationFrame(frame);
+}
+function stopGlide() { cancelAnimationFrame(glideFrame); gliding = false; crate.style.scrollSnapType = ''; }
 function settle() {
   clearTimeout(settleTimer);
-  if (touching || !sleeves.length || !metrics.step) return;
+  if (touching || gliding || !sleeves.length || !metrics.step) return;
   const max = (sleeves.length - 1) * metrics.step;
-  const target = Math.max(0, Math.min(max, Math.round(crate.scrollTop / metrics.step) * metrics.step));
-  if (Math.abs(crate.scrollTop - target) > 1) crate.scrollTo({ top: target, behavior: 'smooth' });
+  glideTo(Math.max(0, Math.min(max, Math.round(crate.scrollTop / metrics.step) * metrics.step)));
 }
-crate.addEventListener('touchstart', () => { touching = true; clearTimeout(settleTimer); }, { passive: true });
-crate.addEventListener('touchend', () => { touching = false; settleTimer = setTimeout(settle, 180); }, { passive: true });
-crate.addEventListener('touchcancel', () => { touching = false; settleTimer = setTimeout(settle, 180); }, { passive: true });
-crate.addEventListener('scroll', () => { clearTimeout(settleTimer); settleTimer = setTimeout(settle, 180); }, { passive: true });
-if ('onscrollend' in window) crate.addEventListener('scrollend', () => setTimeout(settle, 30));
+const SETTLE_AFTER = 90; // ms of stillness before snapping
+crate.addEventListener('touchstart', () => { touching = true; clearTimeout(settleTimer); stopGlide(); }, { passive: true });
+crate.addEventListener('touchend', () => { touching = false; settleTimer = setTimeout(settle, SETTLE_AFTER); }, { passive: true });
+crate.addEventListener('touchcancel', () => { touching = false; settleTimer = setTimeout(settle, SETTLE_AFTER); }, { passive: true });
+crate.addEventListener('scroll', () => { if (gliding) return; clearTimeout(settleTimer); settleTimer = setTimeout(settle, SETTLE_AFTER); }, { passive: true });
+if ('onscrollend' in window) crate.addEventListener('scrollend', () => { if (!gliding) settle(); });
 
 // How the crate stays clean on iPhone:
 // Safari sorts 3D-tilted siblings by their real depth and ignores stacking order when
@@ -530,7 +547,7 @@ crate.addEventListener('click', ev => {
   if (!b) return;
   const i = +b.dataset.i;
   if (i === focusIndex) openSheet(entries[i]);
-  else crate.scrollTo({ top: i * metrics.step, behavior: 'smooth' });
+  else glideTo(i * metrics.step);
 });
 function renderInfo(e) {
   if (!e) return;
