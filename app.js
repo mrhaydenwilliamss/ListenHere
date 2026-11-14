@@ -1,10 +1,11 @@
 // Listen Here — the app.
 // Foreground: photo → what record is it → tracklist → YouTube.
-// Background: every scan is saved on the phone with its photo, time and place.
+// Background: every scan is saved on the phone with its photo and time.
 // Nothing in the background ever holds up the tracklist.
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const PLAY = '<svg class="play" viewBox="0 0 10 12" aria-hidden="true"><path d="M0 0L10 6L0 12Z" fill="currentColor"/></svg>';
 
 /* =========================================================
    Storage — the Collection lives on the phone (IndexedDB)
@@ -49,12 +50,6 @@ function when(iso) {
   const time = d.toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' }).toLowerCase();
   return `${date} · ${time}`;
 }
-function distanceM(a, b) {
-  const R = 6371000, toR = x => x * Math.PI / 180;
-  const dLat = toR(b.lat - a.lat), dLon = toR(b.lon - a.lon);
-  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toR(a.lat)) * Math.cos(toR(b.lat)) * Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(h));
-}
 const blobToBase64 = blob => new Promise(res => {
   const r = new FileReader();
   r.onload = () => res(String(r.result).split(',')[1]);
@@ -62,12 +57,58 @@ const blobToBase64 = blob => new Promise(res => {
 });
 const urls = new Map(); // object URLs for saved photos
 function photoUrl(e) {
-  if (!e.photo) return '';
+  if (!e?.photo) return '';
   if (!urls.has(e.id)) urls.set(e.id, URL.createObjectURL(e.photo));
   return urls.get(e.id);
 }
 const displayArtist = e => e.release?.artist || e.guess?.artist || '';
 const displayTitle = e => e.release?.title || e.guess?.album || '';
+function typoCover(e) {
+  return `<div class="typo"><b>${esc(displayArtist(e) || 'Unknown')}</b><span>${esc(displayTitle(e))}</span></div>`;
+}
+// An <img> that falls back to the user's photo, then to a typographic cover
+function coverImg(e, src) {
+  return src ? `<img src="${esc(src)}" alt="" loading="lazy" data-cover="${esc(e.id)}">` : typoCover(e);
+}
+document.addEventListener('error', ev => {
+  const img = ev.target;
+  if (!(img instanceof HTMLImageElement) || !img.dataset.cover) return;
+  const e = entryById.get(img.dataset.cover) || current;
+  const fallback = img.dataset.noPhoto ? '' : photoUrl(e);
+  if (fallback && img.src !== fallback) img.src = fallback;
+  else img.outerHTML = e ? typoCover(e) : '';
+}, true);
+
+/* =========================================================
+   Match percentage — how sure we are this is the right record.
+   Gemini's own confidence, adjusted by how closely the MusicBrainz
+   record matches what Gemini read, and by MusicBrainz's search score.
+   ========================================================= */
+const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/&/g, 'and').replace(/[^a-z0-9]/g, '');
+function similarity(a, b) {
+  a = norm(a); b = norm(b);
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  if (a.includes(b) || b.includes(a)) return 0.9;
+  const pairs = s => { const m = new Map(); for (let i = 0; i < s.length - 1; i++) { const p = s.slice(i, i + 2); m.set(p, (m.get(p) || 0) + 1); } return m; };
+  const A = pairs(a), B = pairs(b); let hit = 0;
+  for (const [p, n] of A) hit += Math.min(n, B.get(p) || 0);
+  return (2 * hit) / (a.length - 1 + b.length - 1);
+}
+function computeMatch(guess, release, mbScore) {
+  let g = Number(guess?.confidence ?? 0.7);
+  if (g > 1) g = g / 100;
+  g = Math.max(0, Math.min(1, g));
+  const sim = (similarity(guess?.artist, release.artist) + similarity(guess?.album, release.title)) / 2;
+  const s = Math.max(0, Math.min(1, (mbScore ?? 100) / 100));
+  return Math.max(1, Math.min(99, Math.round(100 * g * (0.4 + 0.6 * sim) * (0.75 + 0.25 * s))));
+}
+function matchText(e) {
+  if (e.matchBy === 'manual') return 'Chosen by you';
+  if (e.matchBy === 'barcode') return 'Barcode match';
+  if (typeof e.match === 'number') return `${e.match}% match`;
+  return '';
+}
 
 /* =========================================================
    Views and navigation (no page changes: keeps the camera alive)
@@ -77,8 +118,9 @@ function showView(v) {
   view = v;
   document.querySelectorAll('.view').forEach(el => el.classList.toggle('active', el.id === v));
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === v));
-  if (v === 'collection') { closeSheet(); renderCrate(); }
-  if (v === 'scan') { closeSheet(); ensureCamera(); }
+  closeSheet();
+  if (v === 'collection') renderCollection();
+  if (v === 'scan') ensureCamera();
 }
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => showView(t.dataset.view));
 
@@ -96,6 +138,7 @@ async function startCamera() {
     video.srcObject = stream;
     await video.play();
     $('#startCam').hidden = true;
+    setBusy(false);
     startBarcodes();
   } catch (e) {
     $('#startCam').hidden = false;
@@ -125,25 +168,6 @@ async function capture() {
 }
 
 /* =========================================================
-   Location — asked for once per scan, never blocks anything
-   ========================================================= */
-function captureLocation(entry) {
-  if (!navigator.geolocation || localStorage.getItem('lh_location') === 'off') return;
-  navigator.geolocation.getCurrentPosition(async pos => {
-    entry.location = { lat: pos.coords.latitude, lon: pos.coords.longitude, accuracy: Math.round(pos.coords.accuracy) };
-    // Same spot as a recent named scan? Reuse that place name.
-    if (!entry.place) {
-      const recent = (await allEntries()).find(o => o.id !== entry.id && o.place && o.location && distanceM(o.location, entry.location) < 400);
-      if (recent) entry.place = recent.place;
-    }
-    await saveEntry(entry);
-    if (current?.id === entry.id) renderSheet(entry);
-  }, err => {
-    if (err.code === err.PERMISSION_DENIED) localStorage.setItem('lh_location', 'off');
-  }, { enableHighAccuracy: true, timeout: 12000, maximumAge: 120000 });
-}
-
-/* =========================================================
    Identifying a record
    ========================================================= */
 let busy = false;
@@ -164,10 +188,9 @@ $('#shutter').onclick = async () => {
   setBusy(true, 'Reading…');
   try {
     const { photo, small } = await capture();
-    const entry = { id: newId(), scannedAt, source: 'photo', status: 'identifying', photo, location: null, place: '' };
+    const entry = { id: newId(), scannedAt, source: 'photo', status: 'identifying', photo };
     $('#freeze').src = photoUrl(entry); $('#freeze').hidden = false;
-    saveEntry(entry);           // background: saved immediately, finished later
-    captureLocation(entry);     // background
+    saveEntry(entry);  // saved immediately; finished in the background
     openSheet(entry);
     await identify(entry, await blobToBase64(small));
   } finally {
@@ -189,27 +212,33 @@ async function identify(entry, base64) {
       });
       entry.guess = guess;
       if (guess.kind === 'unknown' || (!guess.album && !guess.artist)) {
-        entry.status = 'notfound'; saveEntry(entry); renderSheet(entry); return;
+        entry.status = 'notfound'; saveEntry(entry); refresh(entry); return;
       }
       saveEntry(entry);
-      if (current?.id === entry.id) renderSheet(entry); // show the name now, tracklist follows
+      refresh(entry); // show the name now; the tracklist follows
     }
     const g = entry.guess;
     const params = new URLSearchParams({ artist: g.artist || '', album: g.album || '' });
     if (g.catalogue_number) params.set('catno', g.catalogue_number);
-    await findRelease(entry, params);
+    await findRelease(entry, params, 'photo');
   } catch (e) {
     entry.status = 'error'; entry.error = e.message;
-    saveEntry(entry);
-    if (current?.id === entry.id) renderSheet(entry);
+    saveEntry(entry); refresh(entry);
   }
 }
 
-async function findRelease(entry, params) {
+async function findRelease(entry, params, by) {
   const j = await api('/api/release?' + params);
-  if (j.found) { entry.release = j.release; entry.status = 'done'; delete entry.error; }
-  else entry.status = 'notfound';
-  saveEntry(entry);
+  if (j.found) {
+    entry.release = j.release; entry.status = 'done'; delete entry.error;
+    entry.matchBy = by;
+    entry.match = by === 'photo' ? computeMatch(entry.guess, j.release, j.score) : null;
+  } else entry.status = 'notfound';
+  saveEntry(entry); refresh(entry);
+}
+
+// Re-draw whatever is showing this record
+function refresh(entry) {
   if (current?.id === entry.id) renderSheet(entry);
 }
 
@@ -220,13 +249,10 @@ async function retryUnfinished() {
   retrying = true;
   try {
     for (const e of await allEntries()) {
-      if (e.id === current?.id && busy) continue;
+      if (busy && e.id === current?.id) continue;
       if (e.status !== 'identifying' && e.status !== 'error') continue;
-      if (e.source === 'barcode') await findRelease(e, new URLSearchParams({ barcode: e.barcode })).catch(() => {});
-      else if (e.photo) {
-        const small = await shrink(e.photo);
-        await identify(e, await blobToBase64(small));
-      }
+      if (e.source === 'barcode') await findRelease(e, new URLSearchParams({ barcode: e.barcode }), 'barcode').catch(() => {});
+      else if (e.photo) await identify(e, await blobToBase64(await shrink(e.photo)));
     }
   } finally { retrying = false; }
 }
@@ -269,17 +295,16 @@ async function barcodeScan(code) {
   setBusy(true, 'Barcode ' + code);
   try {
     const { photo } = await capture();
-    const entry = { id: newId(), scannedAt, source: 'barcode', barcode: code, status: 'identifying', photo, location: null, place: '' };
     const j = await api('/api/release?barcode=' + encodeURIComponent(code));
     if (!j.found) { $('#hint').textContent = 'Barcode not found — photograph the cover or label'; await new Promise(r => setTimeout(r, 2500)); return; }
-    entry.release = j.release; entry.status = 'done';
-    saveEntry(entry); captureLocation(entry); openSheet(entry);
+    const entry = { id: newId(), scannedAt, source: 'barcode', barcode: code, status: 'done', photo, release: j.release, matchBy: 'barcode', match: null };
+    saveEntry(entry); openSheet(entry);
   } catch { /* silent: barcodes are a bonus */ }
   finally { busy = false; setBusy(false); }
 }
 
 /* =========================================================
-   Album sheet
+   Album page
    ========================================================= */
 let current = null;
 const sheet = $('#sheet');
@@ -303,12 +328,20 @@ function closeSheet() {
 function renderSheet(e) {
   const r = e.release, g = e.guess || {};
   const artist = displayArtist(e), title = displayTitle(e);
-  const meta = r ? [r.label, r.catno, r.year, r.format].filter(Boolean).join(' · ') : (g.record_label || '');
-  const art = r?.artwork || photoUrl(e);
+  const mt = matchText(e);
+  const low = typeof e.match === 'number' && e.match < 60;
+  const details = r ? [r.label, r.catno, r.year, r.format].filter(Boolean).join(' · ') : (g.record_label || '');
   let status = '';
-  if (e.status === 'identifying') status = artist ? 'Finding the tracklist…' : (e.source === 'barcode' ? 'Looking up barcode…' : 'Reading the record…');
-  if (e.status === 'notfound') status = artist ? 'Couldn’t find a tracklist for this one.' : 'Couldn’t recognise this record. Try the label, or get closer.';
+  if (e.status === 'identifying') status = artist ? 'Finding the tracklist…' : 'Reading the record…';
+  if (e.status === 'notfound') status = artist ? 'Couldn’t find a tracklist. Try searching by text below.' : 'Couldn’t recognise this record. Try the label, or search by text below.';
   if (e.status === 'error') status = 'No connection to the record database. It will finish by itself when you’re back online.';
+
+  // Slides: the found artwork first, then always your own photo
+  const slides = [];
+  slides.push(r?.artwork
+    ? `<div class="slide"><img src="${esc(r.artwork)}" alt="Found artwork" data-cover="${esc(e.id)}" data-no-photo="1"></div>`
+    : `<div class="slide">${e.photo && !r ? `<img src="${esc(photoUrl(e))}" alt="">` : typoCover(e)}</div>`);
+  if (e.photo && (r?.artwork || r)) slides.push(`<div class="slide"><img src="${esc(photoUrl(e))}" alt="Your photo"><span class="tag mono">Your photo</span></div>`);
 
   const tracks = r?.tracks || [];
   let lastSide = '';
@@ -317,143 +350,178 @@ function renderSheet(e) {
     const gap = lastSide && side !== lastSide ? '<li class="sideRule" aria-hidden="true"></li>' : '';
     lastSide = side;
     return `${gap}<li><a href="${youtubeUrl(r.artist, t.title, r.title)}" data-track>
-      <span class="n">${esc(t.n)}</span><span class="t">${esc(t.title)}</span><span class="go">↗</span></a></li>`;
+      <span class="n">${esc(t.n)}</span><span class="t">${esc(t.title)}</span><span class="go">${PLAY}</span></a></li>`;
   }).join('');
 
-  const showPhoto = r?.artwork && e.photo;
-  sheet.innerHTML = `<div class="sheet-inner">
-    <button class="close" data-act="close" aria-label="Close">×</button>
-    <div class="art">${art ? `<img src="${esc(art)}" alt="" data-fallback="${esc(photoUrl(e))}">` : typoCover(e)}</div>
-    ${meta ? `<p class="meta mono">${esc(meta)}</p>` : ''}
+  sheet.innerHTML = `<div class="sheet-top"><button class="close" data-act="close" aria-label="Close">×</button></div>
+  <div class="sheet-inner">
+    <div class="gallery">
+      <div class="slides">${slides.join('')}</div>
+      <div class="dots">${slides.length > 1 ? slides.map((_, i) => `<i class="${i ? '' : 'on'}"></i>`).join('') : ''}</div>
+    </div>
+    <p class="meta mono">${mt ? `<span class="match ${low ? 'low' : ''}">${esc(mt)}</span>${details ? ' · ' : ''}` : ''}${esc(details)}</p>
     <h2 class="artist">${esc(artist || (e.status === 'identifying' ? '…' : 'Unknown'))}</h2>
     <h3 class="title">${esc(title)}</h3>
     ${status ? `<p class="status mono ${e.status === 'error' ? 'err' : ''}">${esc(status)}</p>` : ''}
     ${e.status === 'error' ? '<button class="btn" data-act="retry" style="margin-top:12px">Try again</button>' : ''}
-    ${e.status === 'notfound' && artist ? `<a class="btn album-yt" href="${youtubeUrl(artist, title, '')}">Search YouTube for the album ↗</a>` : ''}
-    ${tracks.length ? `<p class="lead mono"><span>Tap a track to hear it on YouTube</span><span>↗</span></p><ol class="tracks">${rows}</ol>` : ''}
-    <div class="foot">
-      <div class="where mono">
-        ${e.sample ? '<div class="place">Sample record</div>' : `<div class="place">${esc(e.place || '')}</div>`}
-        <div>${esc(when(e.scannedAt))}</div>
-        ${e.sample ? '' : `<button class="linkbtn mono" data-act="place">${e.place ? 'Edit place' : 'Add place'}</button>`}
-        <div class="placeEdit" hidden><input type="text" placeholder="e.g. Dutch Vinyl, Fitzroy" value="${esc(e.place || '')}" enterkeyhint="done"><button class="btn solid" data-act="savePlace">Save</button></div>
-      </div>
-      ${showPhoto ? `<img src="${esc(photoUrl(e))}" alt="Your photo">` : ''}
-    </div>
-    <div class="actions">
-      <button class="linkbtn mono" data-act="edit">Not this record?</button>
-      <button class="linkbtn mono" data-act="delete">Remove from collection</button>
-    </div>
-    <form class="editForm" hidden>
-      <input name="artist" placeholder="Artist" value="${esc(artist)}" autocomplete="off">
-      <input name="album" placeholder="Album" value="${esc(title)}" autocomplete="off">
-      <button class="btn solid" type="submit">Search again</button>
-    </form>
-  </div>`;
-  const img = sheet.querySelector('.art img');
-  if (img) img.onerror = () => { if (img.dataset.fallback && img.src !== img.dataset.fallback) img.src = img.dataset.fallback; else img.replaceWith(Object.assign(document.createElement('div'), { innerHTML: typoCover(e) }).firstElementChild); };
-}
+    ${e.status === 'notfound' && artist ? `<a class="btn album-yt" href="${youtubeUrl(artist, title, '')}">${PLAY} Search YouTube for the album</a>` : ''}
+    ${tracks.length ? `<p class="lead mono"><span>Tap a track to hear it on YouTube</span>${PLAY}</p><ol class="tracks">${rows}</ol>` : ''}
+    <p class="when mono">${e.sample ? 'Sample record · ' : 'Scanned '}${esc(when(e.scannedAt))}</p>
 
-function typoCover(e) {
-  return `<div class="typo"><b>${esc(displayArtist(e) || 'Unknown')}</b><span>${esc(displayTitle(e))}</span></div>`;
+    <section class="override">
+      <h4>Wrong record?</h4>
+      <p class="mono quiet" style="margin-top:4px">Search by title and artist instead</p>
+      <form data-form="override">
+        <input name="title" placeholder="Title" value="${esc(title)}" autocomplete="off" enterkeyhint="search">
+        <input name="artist" placeholder="Artist" value="${esc(artist)}" autocomplete="off" enterkeyhint="search">
+        <button class="btn solid" type="submit">Search</button>
+      </form>
+      <ul class="cands" id="cands"></ul>
+    </section>
+    <div class="removeRow"><button class="linkbtn mono" data-act="delete">Remove from collection</button></div>
+  </div>`;
+
+  // Dots follow the swipe
+  const strip = sheet.querySelector('.slides'), dots = sheet.querySelectorAll('.dots i');
+  if (dots.length) strip.addEventListener('scroll', () => {
+    const i = Math.round(strip.scrollLeft / strip.clientWidth);
+    dots.forEach((d, k) => d.classList.toggle('on', k === i));
+  }, { passive: true });
 }
 
 sheet.addEventListener('click', async ev => {
-  const t = ev.target.closest('[data-act], [data-track]');
+  const t = ev.target.closest('[data-act], [data-track], [data-pick]');
   if (!t || !current) return;
   if (t.hasAttribute('data-track')) { t.classList.add('played'); return; } // the link opens YouTube
-  const e = current, act = t.dataset.act;
-  if (act === 'close') { closeSheet(); if (view === 'collection') renderCrate(); }
-  if (act === 'retry') { e.status = 'identifying'; renderSheet(e); e.source === 'barcode' ? findRelease(e, new URLSearchParams({ barcode: e.barcode })).catch(() => {}) : identify(e, await blobToBase64(await shrink(e.photo))); }
-  if (act === 'place') { const box = sheet.querySelector('.placeEdit'); box.hidden = false; box.querySelector('input').focus(); }
-  if (act === 'savePlace') { e.place = sheet.querySelector('.placeEdit input').value.trim(); await saveEntry(e); renderSheet(e); }
-  if (act === 'edit') { const f = sheet.querySelector('.editForm'); f.hidden = !f.hidden; if (!f.hidden) f.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+  const e = current;
+  if (t.dataset.pick) return pickCandidate(e, t.dataset.pick);
+  const act = t.dataset.act;
+  if (act === 'close') { closeSheet(); if (view === 'collection') renderCollection(); }
+  if (act === 'retry') {
+    e.status = 'identifying'; renderSheet(e);
+    if (e.source === 'barcode') findRelease(e, new URLSearchParams({ barcode: e.barcode }), 'barcode').catch(() => {});
+    else identify(e, await blobToBase64(await shrink(e.photo)));
+  }
   if (act === 'delete') {
-    if (t.dataset.armed) { await deleteEntry(e.id); closeSheet(); if (view === 'collection') renderCrate(); }
+    if (t.dataset.armed) { await removeEntry(e.id); closeSheet(); if (view === 'collection') renderCollection(); }
     else { t.dataset.armed = '1'; t.textContent = 'Tap again to remove'; t.style.color = 'var(--red)'; }
   }
 });
-sheet.addEventListener('keydown', ev => {
-  if (ev.key === 'Enter' && ev.target.closest('.placeEdit')) sheet.querySelector('[data-act="savePlace"]').click();
-});
+
+// Text override: list the matching releases, the user picks the right one
 sheet.addEventListener('submit', async ev => {
   ev.preventDefault();
-  const e = current, f = new FormData(ev.target);
-  const artist = String(f.get('artist')).trim(), album = String(f.get('album')).trim();
-  if (!artist && !album) return;
-  e.guess = { ...(e.guess || {}), artist, album, catalogue_number: '', kind: e.guess?.kind || 'cover' };
-  delete e.release; e.status = 'identifying'; renderSheet(e);
-  try { await findRelease(e, new URLSearchParams({ artist, album })); }
-  catch (err) { e.status = 'error'; e.error = err.message; saveEntry(e); renderSheet(e); }
+  const f = new FormData(ev.target);
+  const title = String(f.get('title')).trim(), artist = String(f.get('artist')).trim();
+  const list = sheet.querySelector('#cands');
+  if (!title && !artist) { list.innerHTML = '<li class="mono quiet" style="padding:12px 0">Type a title or an artist</li>'; return; }
+  document.activeElement?.blur();
+  list.innerHTML = '<li class="mono quiet" style="padding:12px 0">Searching…</li>';
+  try {
+    const { candidates } = await api('/api/release?' + new URLSearchParams({ list: 1, album: title, artist }));
+    list.innerHTML = candidates.length ? candidates.map(c => `<li><button data-pick="${esc(c.id)}">
+        <b>${esc(c.title)}</b><span>${esc(c.artist)}</span>
+        <span class="mono">${esc([c.year, c.format, c.country, c.label, c.catno].filter(Boolean).join(' · '))}</span>
+      </button></li>`).join('')
+      : '<li class="mono quiet" style="padding:12px 0">No releases found. Try fewer words, or check the spelling.</li>';
+  } catch (err) {
+    list.innerHTML = `<li class="mono" style="padding:12px 0;color:var(--red)">${esc(err.message)}</li>`;
+  }
 });
 
+async function pickCandidate(e, id) {
+  const list = sheet.querySelector('#cands');
+  if (list) list.innerHTML = '<li class="mono quiet" style="padding:12px 0">Loading tracklist…</li>';
+  try {
+    await findRelease(e, new URLSearchParams({ id }), 'manual');
+    sheet.scrollTo({ top: 0, behavior: 'smooth' });
+  } catch (err) {
+    if (list) list.innerHTML = `<li class="mono" style="padding:12px 0;color:var(--red)">${esc(err.message)}</li>`;
+  }
+}
+
+async function removeEntry(id) {
+  await deleteEntry(id);
+  if (urls.has(id)) { URL.revokeObjectURL(urls.get(id)); urls.delete(id); }
+}
+
 /* =========================================================
-   The crate — vertical, layered, the middle record stands up
+   Collection: crate or list
    ========================================================= */
-const crate = $('#crate');
-let sleeves = [], entries = [], focusIndex = -1, ticking = false;
+let mode = localStorage.getItem('lh_mode') || 'crate';
+let entries = [];
+const entryById = new Map();
+document.querySelectorAll('.seg button').forEach(b => b.onclick = () => {
+  mode = b.dataset.mode; localStorage.setItem('lh_mode', mode); renderCollection();
+});
 
-async function renderCrate() {
+async function renderCollection() {
   entries = (await allEntries()).filter(e => displayTitle(e) || e.status === 'identifying');
-  const samples = entries.some(e => e.sample);
-  $('#clearSamples').hidden = !samples;
-  $('#count').textContent = entries.length ? `${entries.length} record${entries.length === 1 ? '' : 's'}` : '';
-  $('#empty').hidden = entries.length > 0;
-  crate.hidden = $('#crateInfo').hidden = entries.length === 0;
-  if (!entries.length) return;
+  entryById.clear(); entries.forEach(e => entryById.set(e.id, e));
+  document.querySelectorAll('.seg button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
+  $('#clearSamples').hidden = !entries.some(e => e.sample);
+  $('#count').textContent = `${entries.length} record${entries.length === 1 ? '' : 's'}`;
+  const empty = entries.length === 0;
+  $('#empty').hidden = !empty;
+  $('#crateWrap').hidden = empty || mode !== 'crate';
+  $('#listWrap').hidden = empty || mode !== 'list';
+  if (empty) return;
+  if (mode === 'crate') renderCrate(); else renderList();
+}
 
-  crate.innerHTML = '<div class="spacer" data-pad></div>' + entries.map((e, i) => {
-    const src = e.release?.artwork || photoUrl(e);
-    return `<button class="sleeve" data-i="${i}" aria-label="${esc(displayArtist(e))} — ${esc(displayTitle(e))}">
-      ${src ? `<img src="${esc(src)}" alt="" loading="lazy" data-fallback="${esc(photoUrl(e))}">` : typoCover(e)}</button>`;
-  }).join('') + '<div class="spacer" data-pad></div>';
+/* ---------- The crate: vertical, layered, the middle record stands up ---------- */
+const crate = $('#crate');
+let sleeves = [], focusIndex = -1, ticking = false, metrics = { s: 0, step: 0 };
+
+function renderCrate() {
+  crate.innerHTML = '<div class="spacer" data-pad></div>' + entries.map((e, i) =>
+    `<button class="sleeve" data-i="${i}" aria-label="${esc(displayArtist(e))} — ${esc(displayTitle(e))}">${coverImg(e, e.release?.artwork || photoUrl(e))}</button>`
+  ).join('') + '<div class="spacer" data-pad></div>';
   sleeves = [...crate.querySelectorAll('.sleeve')];
-  crate.querySelectorAll('.sleeve img').forEach(img => img.onerror = () => {
-    if (img.dataset.fallback && !img.src.startsWith('blob:')) img.src = img.dataset.fallback;
-    else { const e = entries[+img.parentElement.dataset.i]; img.outerHTML = typoCover(e); }
-  });
   layoutCrate();
   crate.scrollTop = 0;
   focusIndex = -1;
   updateCrate();
 }
-
-let metrics = { s: 0, step: 0, pad: 0 };
 function layoutCrate() {
   if (!sleeves.length) return;
-  const s = sleeves[0].offsetWidth;
-  const step = s * 0.34; // distance between record centres (they overlap)
+  const s = sleeves[0].offsetWidth, step = s * 0.34; // distance between record centres (they overlap)
   const pad = Math.max(0, (crate.clientHeight - s) / 2);
-  crate.querySelectorAll('[data-pad]').forEach(p => p.style.height = pad + 'px');
-  // the last record needs room to scroll to the middle
-  crate.lastElementChild.style.height = pad + s * 0.66 + 'px';
-  metrics = { s, step, pad };
+  const [top, bottom] = crate.querySelectorAll('[data-pad]');
+  top.style.height = pad + 'px';
+  bottom.style.height = pad + s * 0.66 + 'px';
+  metrics = { s, step };
 }
-
+// Depth is strictly physical: records further down the list are nearer to you.
+// Records above the middle lean back and get smaller, so they only ever show above the front one.
+// Records below the middle fall forward and drop down, clear of the front one's face.
 function updateCrate() {
   ticking = false;
   if (!sleeves.length) return;
-  const { step } = metrics;
-  const pos = crate.scrollTop / step; // which record is in the middle, as a decimal
+  const { s, step } = metrics;
+  const pos = crate.scrollTop / step;
   sleeves.forEach((el, i) => {
-    const d = i - pos;               // <0 above the middle (further into the crate), >0 below (flicked forward)
-    const a = Math.abs(d);
-    if (a > 7) { el.style.visibility = 'hidden'; return; }
+    const d = i - pos, a = Math.abs(d);
+    if (d < -6 || d > 4) { el.style.visibility = 'hidden'; return; }
     el.style.visibility = '';
     const k = Math.min(a, 1);
-    const angle = d < 0 ? 52 * k + 6 * Math.min(a - k, 4) : -64 * k;  // lean back vs fall forward
-    const lift = d < 0 ? 0 : -metrics.s * 0.08 * k;
-    const scale = 1 - (d > 0 ? 0.12 : 0.06) * Math.min(a, 3);
-    el.style.transform = `translateY(${lift}px) rotateX(${angle}deg) scale(${scale})`;
-    el.style.zIndex = String(100 - Math.round(a * 10) + (d > 0 ? 0 : 1));
-    el.style.filter = a > 0.5 ? `brightness(${1 - Math.min(a, 4) * 0.08})` : '';
+    let transform;
+    if (d <= 0) {
+      const angle = 48 * k + 4 * Math.min(a - k, 4);
+      const scale = 1 - 0.07 * k - 0.03 * Math.min(a - k, 4);
+      transform = `rotateX(${angle}deg) scale(${scale})`;
+    } else {
+      transform = `translateY(${s * 0.22 * k}px) rotateX(${-70 * k}deg)`;
+    }
+    el.style.transform = transform;
+    el.style.zIndex = String(i + 1);
+    el.style.filter = d < -0.3 ? `brightness(${1 - Math.min(a, 4) * 0.07})` : '';
   });
   const i = Math.max(0, Math.min(sleeves.length - 1, Math.round(pos)));
   if (i !== focusIndex) { focusIndex = i; renderInfo(entries[i]); }
 }
 crate.addEventListener('scroll', () => { if (!ticking) { ticking = true; requestAnimationFrame(updateCrate); } }, { passive: true });
 addEventListener('resize', () => { layoutCrate(); updateCrate(); });
-
 crate.addEventListener('click', ev => {
   const b = ev.target.closest('.sleeve');
   if (!b) return;
@@ -461,15 +529,53 @@ crate.addEventListener('click', ev => {
   if (i === focusIndex) openSheet(entries[i]);
   else crate.scrollTo({ top: i * metrics.step, behavior: 'smooth' });
 });
-
 function renderInfo(e) {
   if (!e) return;
-  const where = e.sample ? 'Sample record' : e.place;
   $('#crateInfo').innerHTML = `<div class="a">${esc(displayArtist(e) || '…')}</div>
     <div class="t">${esc(displayTitle(e))}</div>
-    <div class="w mono">${esc([where, when(e.scannedAt)].filter(Boolean).join(' · '))}</div>`;
+    <div class="w mono">${esc([matchText(e), e.sample ? 'Sample record' : when(e.scannedAt)].filter(Boolean).join(' · '))}</div>`;
 }
 $('#crateInfo').onclick = () => entries[focusIndex] && openSheet(entries[focusIndex]);
+
+/* ---------- The list: search as you type, swipe left to delete ---------- */
+const listEl = $('#list'), q = $('#q');
+function renderList() {
+  const words = norm(q.value) ? q.value.toLowerCase().split(/\s+/).filter(Boolean) : [];
+  const shown = entries.filter(e => {
+    if (!words.length) return true;
+    const hay = [displayTitle(e), displayArtist(e), e.release?.label, e.release?.catno, e.release?.year].join(' ').toLowerCase();
+    return words.every(w => hay.includes(w));
+  });
+  listEl.innerHTML = shown.map(e => {
+    const r = e.release || {};
+    const meta = [r.year, r.label, matchText(e)].filter(Boolean).join(' · ');
+    return `<li><div class="swipe">
+      <button class="rowmain" data-open="${esc(e.id)}">
+        <span class="cover">${coverImg(e, r.artwork || photoUrl(e))}</span>
+        <span class="txt"><span class="rt">${esc(displayTitle(e) || '…')}</span><span class="ra">${esc(displayArtist(e))}</span><span class="rm mono">${esc(meta)}</span></span>
+      </button>
+      <button class="rowdel" data-del="${esc(e.id)}">Delete</button>
+    </div></li>`;
+  }).join('');
+  $('#noResults').hidden = shown.length > 0;
+}
+q.addEventListener('input', renderList);
+listEl.addEventListener('click', async ev => {
+  const open = ev.target.closest('[data-open]'), del = ev.target.closest('[data-del]');
+  if (open) {
+    const sw = open.parentElement;
+    if (sw.scrollLeft > 4) { sw.scrollTo({ left: 0, behavior: 'smooth' }); return; } // tap closes an open swipe
+    openSheet(entryById.get(open.dataset.open));
+  }
+  if (del) {
+    const li = del.closest('li');
+    li.style.transition = 'opacity .2s'; li.style.opacity = '0';
+    await removeEntry(del.dataset.del);
+    entries = entries.filter(e => e.id !== del.dataset.del);
+    entryById.delete(del.dataset.del);
+    setTimeout(() => { li.remove(); $('#count').textContent = `${entries.length} record${entries.length === 1 ? '' : 's'}`; if (!entries.length) renderCollection(); }, 200);
+  }
+});
 
 /* =========================================================
    Sample records — real lookups, so the design is judged on real artwork
@@ -489,17 +595,17 @@ $('#addSamples').onclick = async () => {
       const j = await api('/api/release?' + new URLSearchParams({ artist, album }));
       if (j.found) await saveEntry({
         id: newId(), sample: true, source: 'sample', status: 'done', release: j.release,
-        scannedAt: new Date(Date.now() - n * 36e5 * 26).toISOString(), place: '', location: null
+        scannedAt: new Date(Date.now() - n * 36e5 * 26).toISOString()
       });
     } catch { /* skip */ }
     await new Promise(r => setTimeout(r, 1100)); // be polite to MusicBrainz
   }
   btn.disabled = false; btn.textContent = 'Fill with sample records';
-  renderCrate();
+  renderCollection();
 };
 $('#clearSamples').onclick = async () => {
-  for (const e of await allEntries()) if (e.sample) await deleteEntry(e.id);
-  renderCrate();
+  for (const e of await allEntries()) if (e.sample) await removeEntry(e.id);
+  renderCollection();
 };
 
 /* =========================================================

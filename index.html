@@ -7,7 +7,9 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Listen Here">
-<meta name="theme-color" content="#F1ECE2">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#F1ECE2" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#14120F" media="(prefers-color-scheme: dark)">
 <title>Listen Here</title>
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/favicon.ico" sizes="any">
@@ -36,25 +38,41 @@
   <p class="hint mono" id="hint">Fill the frame with a cover or label</p>
 </section>
 
-<!-- COLLECTION: the crate -->
+<!-- COLLECTION: crate or list -->
 <section id="collection" class="view" aria-label="Collection">
   <header class="colhead">
-    <h1>Collection</h1>
-    <div class="right mono">
-      <button id="clearSamples" class="mono linkbtn" hidden>Remove samples</button>
+    <div class="row1">
+      <h1>Collection</h1>
+      <div class="seg" role="group" aria-label="Collection view">
+        <button data-mode="crate">Crate</button>
+        <button data-mode="list">List</button>
+      </div>
+    </div>
+    <div class="row2 mono">
       <span id="count"></span>
+      <button id="clearSamples" class="linkbtn mono" hidden>Remove samples</button>
     </div>
   </header>
-  <div class="crate" id="crate"></div>
-  <div class="crate-info" id="crateInfo"></div>
+
+  <div id="crateWrap">
+    <div class="crate" id="crate"></div>
+    <div class="crate-info" id="crateInfo"></div>
+  </div>
+
+  <div id="listWrap" hidden>
+    <div class="searchbar"><input id="q" type="search" placeholder="Search your collection" autocomplete="off" autocorrect="off" enterkeyhint="search"></div>
+    <ul class="list" id="list"></ul>
+    <p class="noresults mono" id="noResults" hidden>No records match</p>
+  </div>
+
   <div class="empty" id="empty" hidden>
     <p>Nothing in the crate yet</p>
-    <div class="mono" style="color:var(--quiet)">Every record you scan lands here</div>
+    <div class="mono quiet">Every record you scan lands here</div>
     <button class="btn" id="addSamples">Fill with sample records</button>
   </div>
 </section>
 
-<!-- ALBUM: slides up over the camera -->
+<!-- ALBUM: full screen over everything but the tab bar -->
 <aside id="sheet" class="sheet" aria-label="Album" aria-hidden="true"></aside>
 
 <!-- NAVIGATION -->
