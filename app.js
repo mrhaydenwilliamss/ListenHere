@@ -104,13 +104,15 @@ let stream = null;
 async function startCamera() {
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1920 } },
+      // 4:3 uses the camera's full width; widescreen modes crop the sides
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 }, aspectRatio: { ideal: 4 / 3 } },
       audio: false
     });
     video.srcObject = stream;
     await video.play();
     $('#startCam').hidden = true;
     setBusy(false);
+    layoutFrame();
     startBarcodes();
   } catch (e) {
     $('#startCam').hidden = false;
@@ -126,23 +128,26 @@ document.addEventListener('visibilitychange', () => {
   retryUnfinished();
 });
 
-// Take exactly what's inside the on-screen frame.
-// The preview fills the screen by zooming the camera feed ("cover"), so we work out
-// which part of the feed sits behind the frame and crop just that.
-function frameCrop() {
+// The photo is the largest square of the camera image (the widest shot possible).
+// The brackets are drawn over exactly that square, so the preview matches the photo.
+function layoutFrame() {
   const vw = video.videoWidth, vh = video.videoHeight;
-  const box = video.getBoundingClientRect(), f = $('#frame').getBoundingClientRect();
-  const scale = Math.max(box.width / vw, box.height / vh);       // how much the feed is zoomed
-  const ox = box.left + (box.width - vw * scale) / 2;            // where the feed's edge sits on screen
-  const oy = box.top + (box.height - vh * scale) / 2;
-  let side = Math.min(f.width, f.height) / scale;
-  let sx = (f.left - ox) / scale, sy = (f.top - oy) / scale;
-  side = Math.min(side, vw, vh);
-  sx = Math.max(0, Math.min(vw - side, sx)); sy = Math.max(0, Math.min(vh - side, sy));
-  return { sx, sy, side };
+  if (!vw || !vh) return;
+  const box = video.getBoundingClientRect();
+  const scale = Math.min(box.width / vw, box.height / vh);   // whole image shown ("contain")
+  const side = Math.min(vw, vh) * scale;
+  const f = $('#frame').style;
+  f.width = side + 'px';
+  f.left = (box.left + box.width / 2) + 'px';
+  f.top = (box.top + box.height / 2) + 'px';
 }
+video.addEventListener('loadedmetadata', layoutFrame);
+video.addEventListener('resize', layoutFrame);
+addEventListener('resize', layoutFrame);
+
 async function capture() {
-  const { sx, sy, side } = frameCrop();
+  const vw = video.videoWidth, vh = video.videoHeight, side = Math.min(vw, vh);
+  const sx = (vw - side) / 2, sy = (vh - side) / 2;
   const make = (size, q) => new Promise(res => {
     const c = document.createElement('canvas');
     c.width = c.height = Math.round(Math.min(size, side));

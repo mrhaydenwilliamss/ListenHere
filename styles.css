@@ -53,7 +53,8 @@ a { color: inherit; text-decoration: none; }
 
 /* ---------- Scan ---------- */
 #scan { background: #000; }
-#scan video, #scan .freeze { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+/* The whole camera image is shown, never zoomed in: what you see is what's captured */
+#scan video, #scan .freeze { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
 .topbar {
   position: absolute; top: 0; left: 0; right: 0; z-index: 2;
   padding: calc(env(safe-area-inset-top) + 14px) 20px 14px;
@@ -68,8 +69,9 @@ a { color: inherit; text-decoration: none; }
   background: rgba(0,0,0,.25);
 }
 .frame {
-  position: absolute; z-index: 2; left: 50%; top: 46%;
-  width: min(78vw, 46vh, 440px); aspect-ratio: 1;
+  /* Placed by app.js over the largest square of the camera image: exactly the photo */
+  position: absolute; z-index: 2; left: 50%; top: 50%;
+  width: min(100vw, 60vh); aspect-ratio: 1;
   transform: translate(-50%, -50%); pointer-events: none;
 }
 .frame i { position: absolute; width: 28px; height: 28px; border: 0 solid #fff; }
@@ -280,7 +282,6 @@ a { color: inherit; text-decoration: none; }
   .sheet-inner { padding: 0 32px var(--zone); }
   #collection.withSheet .colhead, #collection.withSheet #crateWrap > *, #collection.withSheet #listWrap, #collection.withSheet .empty { right: min(520px, 50vw); }
   .crate { --s: min(40vw, 44vh, 400px); }
-  .frame { width: min(52vh, 440px); }
 }
 @media (min-width: 1200px) {
   .crate { --s: min(30vw, 48vh, 440px); }
