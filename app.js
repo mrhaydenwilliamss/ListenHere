@@ -99,7 +99,7 @@ document.querySelectorAll('[data-go]').forEach(b => b.onclick = () => showView(b
 /* =========================================================
    Camera
    ========================================================= */
-const video = $('#video');
+const video = $('#video'), videoBg = $('#videoBg');
 let stream = null;
 async function startCamera() {
   try {
@@ -109,10 +109,12 @@ async function startCamera() {
       audio: false
     });
     video.srcObject = stream;
+    videoBg.srcObject = stream;          // same live feed, shown blurred behind
     await video.play();
+    videoBg.play().catch(() => {});
+    layoutVideo();
     $('#startCam').hidden = true;
     setBusy(false);
-    layoutFrame();
     startBarcodes();
   } catch (e) {
     $('#startCam').hidden = false;
@@ -120,7 +122,9 @@ async function startCamera() {
   }
 }
 const cameraLive = () => stream && stream.getVideoTracks()[0]?.readyState === 'live';
-function ensureCamera() { if (!cameraLive()) startCamera(); else if (video.paused) video.play().catch(() => {}); $('#frame').classList.remove('shot'); }
+function ensureCamera() { if (!cameraLive()) startCamera(); else if (video.paused) resumePreview(); }
+function freezePreview() { video.pause(); videoBg.pause(); }
+function resumePreview() { video.play().catch(() => {}); videoBg.play().catch(() => {}); }
 $('#startCam').onclick = startCamera;
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
@@ -128,26 +132,43 @@ document.addEventListener('visibilitychange', () => {
   retryUnfinished();
 });
 
-// The photo is the largest square of the camera image (the widest shot possible).
-// The brackets are drawn over exactly that square, so the preview matches the photo.
-function layoutFrame() {
+// Size the sharp picture to the camera's own shape, as large as fits ("contain"),
+// fade whichever edges fall short of the screen into the blurred backdrop, and keep
+// the brackets inside the sharp area, near full width.
+function layoutVideo() {
   const vw = video.videoWidth, vh = video.videoHeight;
   if (!vw || !vh) return;
-  const box = video.getBoundingClientRect();
-  const scale = Math.min(box.width / vw, box.height / vh);   // whole image shown ("contain")
-  const side = Math.min(vw, vh) * scale;
+  const W = innerWidth, H = innerHeight;
+  const scale = Math.min(W / vw, H / vh);
+  const w = vw * scale, h = vh * scale;
+  Object.assign(video.style, { width: w + 'px', height: h + 'px', left: (W - w) / 2 + 'px', top: (H - h) / 2 + 'px' });
+  video.classList.toggle('fadeY', h < H - 1);
+  video.classList.toggle('fadeX', w < W - 1 && !(h < H - 1));
+  const side = Math.max(120, Math.min(w - 32, h - 32, 640));
   const f = $('#frame').style;
   f.width = side + 'px';
-  f.left = (box.left + box.width / 2) + 'px';
-  f.top = (box.top + box.height / 2) + 'px';
+  f.top = (H - h) / 2 + h / 2 + 'px';
 }
-video.addEventListener('loadedmetadata', layoutFrame);
-video.addEventListener('resize', layoutFrame);
-addEventListener('resize', layoutFrame);
+video.addEventListener('loadedmetadata', layoutVideo);
+video.addEventListener('resize', layoutVideo);
+addEventListener('resize', layoutVideo);
+addEventListener('orientationchange', () => setTimeout(layoutVideo, 300));
 
+// The photo is exactly what's inside the on-screen brackets: we work out which part of
+// the camera image sits behind them and crop just that.
+function frameCrop() {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const box = video.getBoundingClientRect(), f = $('#frame').getBoundingClientRect();
+  const scale = Math.max(box.width / vw, box.height / vh);      // how much the image is enlarged
+  const ox = box.left + (box.width - vw * scale) / 2;           // where the image's edge sits on screen
+  const oy = box.top + (box.height - vh * scale) / 2;
+  let side = Math.min(Math.min(f.width, f.height) / scale, vw, vh);
+  const sx = Math.max(0, Math.min(vw - side, (f.left - ox) / scale));
+  const sy = Math.max(0, Math.min(vh - side, (f.top - oy) / scale));
+  return { sx, sy, side };
+}
 async function capture() {
-  const vw = video.videoWidth, vh = video.videoHeight, side = Math.min(vw, vh);
-  const sx = (vw - side) / 2, sy = (vh - side) / 2;
+  const { sx, sy, side } = frameCrop();
   const make = (size, q) => new Promise(res => {
     const c = document.createElement('canvas');
     c.width = c.height = Math.round(Math.min(size, side));
@@ -157,6 +178,15 @@ async function capture() {
   const [photo, small] = await Promise.all([make(1200, 0.88), make(768, 0.8)]);
   return { photo, small };
 }
+
+// Shutter confirmation on the crosshairs (restarts cleanly on rapid presses)
+function flashFrame() {
+  const f = $('#frame');
+  f.classList.remove('flash');
+  void f.offsetWidth;
+  f.classList.add('flash');
+}
+$('#frame').addEventListener('animationend', ev => { if (ev.target.classList.contains('ring')) $('#frame').classList.remove('flash'); });
 
 /* =========================================================
    Identifying a record
@@ -175,17 +205,20 @@ $('#shutter').onclick = async () => {
   if (view !== 'scan' || sheetOpen()) return showView('scan');
   if (!cameraLive()) return startCamera();
   if (busy) return;
+  flashFrame(); // instant, before any processing
+  const tappedAt = performance.now();
   busy = true;
   const scannedAt = new Date().toISOString(); // the actual moment of scanning
   setBusy(true, 'Reading…');
   try {
-    $('#frame').classList.add('shot'); // frame turns shutter-red the instant you tap
     const { photo, small } = await capture();
-    video.pause(); // freeze the preview exactly as framed
+    freezePreview(); // freeze the preview exactly as framed
     const entry = { id: newId(), scannedAt, source: 'photo', status: 'identifying', photo };
     saveEntry(entry);  // saved immediately; finished in the background
-    openSheet(entry);
-    await identify(entry, await blobToBase64(small));
+    const working = identify(entry, await blobToBase64(small)); // starts now, never waits for the page
+    // Let the crosshair flash be seen before the album slides up (identifying takes longer anyway)
+    setTimeout(() => { if (view === 'scan' && !sheetOpen()) openSheet(entry); }, Math.max(0, 260 - (performance.now() - tappedAt)));
+    await working;
   } finally {
     busy = false; setBusy(false);
   }
@@ -314,8 +347,7 @@ function closeSheet() {
   sheet.classList.remove('open');
   sheet.setAttribute('aria-hidden', 'true');
   $('#collection').classList.remove('withSheet');
-  if (view === 'scan' && video.paused) video.play().catch(() => {}); // unfreeze the preview
-  $('#frame').classList.remove('shot');
+  if (view === 'scan' && video.paused) resumePreview(); // unfreeze the preview
 }
 
 function renderSheet(e) {

@@ -51,42 +51,92 @@ a { color: inherit; text-decoration: none; }
 .view { position: fixed; inset: 0; display: none; }
 .view.active { display: block; }
 
-/* ---------- Scan ---------- */
+/* ---------- Scan: full-bleed camera, controls float over it ---------- */
 #scan { background: #000; }
-/* The whole camera image is shown, never zoomed in: what you see is what's captured */
-#scan video, #scan .freeze { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+/* The camera's full width is shown sharp (nothing cropped). app.js sizes it exactly.
+   Where it doesn't reach the screen edges, a blurred copy of the same live feed fills
+   the space, and the sharp picture's edges fade into it. */
+#scan video#video { position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: cover; z-index: 1; }
+#scan video#video.fadeY {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 56px, #000 calc(100% - 56px), transparent 100%);
+          mask-image: linear-gradient(to bottom, transparent 0, #000 56px, #000 calc(100% - 56px), transparent 100%);
+}
+#scan video#video.fadeX {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 56px, #000 calc(100% - 56px), transparent 100%);
+          mask-image: linear-gradient(to right, transparent 0, #000 56px, #000 calc(100% - 56px), transparent 100%);
+}
+/* Blurred backdrop: drawn at quarter size, then scaled up (cheap for the phone, extra soft) */
+#scan video.bg {
+  position: absolute; z-index: 0; left: 37.5%; top: 37.5%; width: 25%; height: 25%;
+  object-fit: cover; transform: scale(4.5); transform-origin: 50% 50%;
+  filter: blur(6px) brightness(.72) saturate(1.15);
+  pointer-events: none;
+}
+#scan .freeze { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+
+/* Top controls sit straight on the image, aligned to the safe area, no bar behind them */
 .topbar {
-  position: absolute; top: 0; left: 0; right: 0; z-index: 2;
-  padding: calc(env(safe-area-inset-top) + 14px) 20px 14px;
-  display: flex; align-items: center; gap: 10px; color: #fff;
-  background: linear-gradient(rgba(0,0,0,.45), transparent);
+  position: absolute; z-index: 3; top: 0; left: 0; right: 0; pointer-events: none;
+  padding: calc(env(safe-area-inset-top) + 10px) max(16px, env(safe-area-inset-right)) 0 max(16px, env(safe-area-inset-left));
+  display: flex; align-items: center; gap: 9px; color: #fff;
 }
-.topbar img { width: 22px; height: 22px; filter: invert(1); mix-blend-mode: screen; }
-.wordmark { font-stretch: 75%; font-weight: 800; letter-spacing: .08em; font-size: 15px; }
+.topbar > * { pointer-events: auto; }
+.topbar img { width: 20px; height: 20px; filter: invert(1) drop-shadow(0 1px 2px rgba(0,0,0,.5)); mix-blend-mode: normal; }
+.wordmark { font-stretch: 75%; font-weight: 800; letter-spacing: .08em; font-size: 14px; text-shadow: 0 1px 3px rgba(0,0,0,.55); }
+/* Translucent pill only behind the button, for legibility over any image */
 .toCollection {
-  margin-left: auto; color: #fff; border: 1.5px solid #fff; padding: 8px 12px;
-  font-weight: 700; font-stretch: 80%; font-size: 13px; letter-spacing: .08em; text-transform: uppercase;
-  background: rgba(0,0,0,.25);
+  margin-left: auto; color: #fff; padding: 9px 14px; border-radius: 999px;
+  font-weight: 700; font-stretch: 80%; font-size: 12.5px; letter-spacing: .08em; text-transform: uppercase;
+  background: rgba(0,0,0,.32); -webkit-backdrop-filter: blur(14px) saturate(140%); backdrop-filter: blur(14px) saturate(140%);
 }
+
+/* Brackets: a near full-width square. Sized by the screen; app.js crops the photo to match */
 .frame {
-  /* Placed by app.js over the largest square of the camera image: exactly the photo */
-  position: absolute; z-index: 2; left: 50%; top: 50%;
-  width: min(100vw, 60vh); aspect-ratio: 1;
+  position: absolute; z-index: 3; left: 50%; top: 50%;
+  width: min(calc(100vw - 32px), calc(100vh - 260px), 640px); aspect-ratio: 1;
   transform: translate(-50%, -50%); pointer-events: none;
 }
-.frame i { position: absolute; width: 28px; height: 28px; border: 0 solid #fff; }
+.frame i {
+  position: absolute; width: 30px; height: 30px; border: 0 solid #fff; box-sizing: border-box;
+  filter: drop-shadow(0 0 1.5px rgba(0,0,0,.45));
+  transition: border-color .18s ease, border-width .18s ease;
+}
 .frame .tl { top: 0; left: 0; border-top-width: 2px; border-left-width: 2px; }
 .frame .tr { top: 0; right: 0; border-top-width: 2px; border-right-width: 2px; }
 .frame .bl { bottom: 0; left: 0; border-bottom-width: 2px; border-left-width: 2px; }
 .frame .br { bottom: 0; right: 0; border-bottom-width: 2px; border-right-width: 2px; }
-.frame .ring { position: absolute; inset: 22%; border-radius: 50%; border: 1px dashed rgba(255,255,255,.45); }
-.frame.busy i, .frame.shot i { border-color: var(--red); }
-.frame.shot .ring { border: 1.5px solid var(--red); }
-.hint { position: absolute; z-index: 2; left: 0; right: 0; bottom: calc(var(--zone) + 6px); text-align: center; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.6); }
+.frame .ring {
+  position: absolute; inset: 24%; border-radius: 50%; box-sizing: border-box;
+  border: 1px dashed rgba(255,255,255,.5);
+}
+
+/* Shutter confirmation: crosshairs flash vivid orange and thicken, hold ~200 ms, ease back.
+   Lines grow inward (border-box), so position and geometry never move. */
+:root { --flash: #FF6B1A; }
+.frame.flash i { animation-duration: .52s; animation-timing-function: cubic-bezier(.2,.8,.2,1); }
+.frame.flash .tl { animation-name: flashTL; } .frame.flash .tr { animation-name: flashTR; }
+.frame.flash .bl { animation-name: flashBL; } .frame.flash .br { animation-name: flashBR; }
+@keyframes flashTL { 18%, 58% { border-color: var(--flash); border-top-width: 4.5px; border-left-width: 4.5px; } }
+@keyframes flashTR { 18%, 58% { border-color: var(--flash); border-top-width: 4.5px; border-right-width: 4.5px; } }
+@keyframes flashBL { 18%, 58% { border-color: var(--flash); border-bottom-width: 4.5px; border-left-width: 4.5px; } }
+@keyframes flashBR { 18%, 58% { border-color: var(--flash); border-bottom-width: 4.5px; border-right-width: 4.5px; } }
+.frame.flash .ring { animation: ringFlash .52s cubic-bezier(.2,.8,.2,1); }
+@keyframes ringFlash { 18%, 58% { border: 3px solid var(--flash); } }
+
+.hint {
+  position: absolute; z-index: 3; left: 0; right: 0; bottom: calc(var(--zone) + 4px);
+  text-align: center; color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,.7);
+}
 .startcam {
-  position: absolute; z-index: 3; left: 50%; top: 46%; transform: translate(-50%, -50%);
-  background: var(--paper); color: var(--ink); padding: 18px 22px;
+  position: absolute; z-index: 4; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  color: #fff; padding: 16px 22px; border-radius: 999px;
+  background: rgba(0,0,0,.35); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
   font-weight: 700; font-stretch: 80%; letter-spacing: .06em; text-transform: uppercase;
+}
+/* Landscape phones: shutter moves to the right edge, as in the Camera app */
+@media (orientation: landscape) and (max-height: 520px) {
+  .frame { top: 50%; width: calc(100vh - 56px); }
+  .hint { bottom: 12px; }
 }
 
 /* ---------- Floating shutter: a filled disc inside a ring, like the iPhone camera ---------- */
@@ -102,6 +152,13 @@ a { color: inherit; text-decoration: none; }
 .shutter:active { transform: translateX(-50%) scale(.9); }
 .shutter.busy { animation: pulse 1s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .5; } }
+@media (orientation: landscape) and (max-height: 520px) {
+  body[data-view="scan"] .shutter {
+    left: auto; bottom: auto; top: 50%; right: calc(max(env(safe-area-inset-right), 12px) + 18px);
+    transform: translateY(-50%);
+  }
+  body[data-view="scan"] .shutter:active { transform: translateY(-50%) scale(.9); }
+}
 
 /* ---------- Album (full screen) ---------- */
 .sheet {
