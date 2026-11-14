@@ -516,19 +516,40 @@ function renderInfo(e) {
 }
 $('#crateInfo').onclick = () => entries[focusIndex] && openSheet(entries[focusIndex]);
 
-/* ---------- The list: search as you type, swipe left to delete ---------- */
-const listEl = $('#list'), q = $('#q');
+/* ---------- The list: search as you type, sort, A–Z index, swipe left to delete ---------- */
+const listEl = $('#list'), q = $('#q'), az = $('#az'), bubble = $('#azBubble');
+let sortBy = localStorage.getItem('lh_sort') || 'artist';
+const LETTERS = ['#', ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'];
+// Filed the way a record shop files them: "The Cure" under C
+const sortText = s => String(s || '').trim().replace(/^(the|a|an)\s+/i, '');
+const letterOf = s => { const c = norm(sortText(s)).charAt(0).toUpperCase(); return /[A-Z]/.test(c) ? c : '#'; };
+function sortValue(e) {
+  if (sortBy === 'title') return sortText(displayTitle(e));
+  if (sortBy === 'date') return e.scannedAt;
+  return sortText(displayArtist(e));
+}
+document.querySelectorAll('.sortbar button').forEach(b => b.onclick = () => {
+  sortBy = b.dataset.sort; localStorage.setItem('lh_sort', sortBy); listEl.scrollTop = 0; renderList();
+});
+
 function renderList() {
+  document.querySelectorAll('.sortbar button').forEach(b => b.classList.toggle('on', b.dataset.sort === sortBy));
   const words = norm(q.value) ? q.value.toLowerCase().split(/\s+/).filter(Boolean) : [];
   const shown = entries.filter(e => {
     if (!words.length) return true;
     const hay = [displayTitle(e), displayArtist(e), e.release?.label, e.release?.catno, e.release?.year].join(' ').toLowerCase();
     return words.every(w => hay.includes(w));
   });
+  // Always ascending: A to Z, or oldest scan first
+  const cmp = (x, y) => sortBy === 'date' ? x.localeCompare(y) : x.localeCompare(y, 'en', { sensitivity: 'base', numeric: true });
+  shown.sort((a, b) => cmp(sortValue(a), sortValue(b)) || cmp(sortText(displayTitle(a)), sortText(displayTitle(b))));
+
+  const alpha = sortBy !== 'date';
   listEl.innerHTML = shown.map(e => {
     const r = e.release || {};
     const meta = [r.year, r.label, r.format].filter(Boolean).join(' · ');
-    return `<li><div class="swipe">
+    const letter = alpha ? letterOf(sortBy === 'title' ? displayTitle(e) : displayArtist(e)) : '';
+    return `<li data-letter="${letter}"><div class="swipe">
       <button class="rowmain" data-open="${esc(e.id)}">
         <span class="cover">${coverImg(e, r.artwork || photoUrl(e))}</span>
         <span class="txt"><span class="rt">${esc(displayTitle(e) || '…')}</span><span class="ra">${esc(displayArtist(e))}</span><span class="rm mono">${esc(meta)}</span></span>
@@ -537,7 +558,47 @@ function renderList() {
     </div></li>`;
   }).join('');
   $('#noResults').hidden = shown.length > 0;
+
+  // A–Z index, only when sorted alphabetically and there's enough to scroll
+  const showIndex = alpha && shown.length > 8;
+  az.hidden = !showIndex;
+  listEl.classList.toggle('withIndex', showIndex);
+  if (showIndex) {
+    const present = new Set([...listEl.children].map(li => li.dataset.letter));
+    az.innerHTML = LETTERS.map(l => `<span data-l="${l}" class="${present.has(l) ? '' : 'off'}">${l}</span>`).join('');
+  }
 }
+
+// Jump to the first record under a letter (or the next letter that has records)
+function jumpTo(letter) {
+  const from = LETTERS.indexOf(letter);
+  for (const l of LETTERS.slice(from).concat(LETTERS.slice(0, from).reverse())) {
+    const li = listEl.querySelector(`li[data-letter="${l}"]`);
+    if (li) { listEl.scrollTop = li.offsetTop; break; }
+  }
+  bubble.textContent = letter; bubble.hidden = false;
+  clearTimeout(jumpTo.t); jumpTo.t = setTimeout(() => bubble.hidden = true, 600);
+}
+function letterAt(y) {
+  const spans = az.querySelectorAll('span');
+  for (const s of spans) { const r = s.getBoundingClientRect(); if (y >= r.top && y < r.bottom) return s.dataset.l; }
+  const first = spans[0]?.getBoundingClientRect();
+  return y < (first?.top ?? 0) ? LETTERS[0] : LETTERS.at(-1);
+}
+let lastLetter = '';
+function onIndex(ev) {
+  ev.preventDefault();
+  const t = ev.touches ? ev.touches[0] : ev;
+  const l = letterAt(t.clientY);
+  if (l !== lastLetter) { lastLetter = l; jumpTo(l); }
+}
+az.addEventListener('touchstart', ev => { lastLetter = ''; onIndex(ev); }, { passive: false });
+az.addEventListener('touchmove', onIndex, { passive: false });
+az.addEventListener('mousedown', ev => {
+  lastLetter = ''; onIndex(ev);
+  const move = e => onIndex(e), up = () => { removeEventListener('mousemove', move); removeEventListener('mouseup', up); };
+  addEventListener('mousemove', move); addEventListener('mouseup', up);
+});
 q.addEventListener('input', renderList);
 listEl.addEventListener('click', async ev => {
   const open = ev.target.closest('[data-open]'), del = ev.target.closest('[data-del]');

@@ -11,7 +11,7 @@
   --red: #D6452A;
   --field: #FFFFFF;
   --head-h: calc(env(safe-area-inset-top) + 92px);
-  --zone: calc(env(safe-area-inset-bottom) + 112px); /* room kept clear for the floating shutter */
+  --zone: calc(env(safe-area-inset-bottom) + 92px); /* room kept clear for the floating shutter */
   --display: 'Archivo', 'Helvetica Neue', Arial, sans-serif;
   --mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
   color-scheme: light dark;
@@ -30,6 +30,9 @@
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
+html { background: var(--paper); }
+/* On the camera, anything behind the page is black, never a grey band */
+html:has(body[data-view="scan"]), body[data-view="scan"] { background: #000; }
 body {
   background: var(--paper); color: var(--ink);
   font: 16px/1.4 var(--display);
@@ -45,7 +48,7 @@ a { color: inherit; text-decoration: none; }
 .play { width: 10px; height: 12px; display: inline-block; flex: none; }
 
 /* ---------- Views ---------- */
-.view { position: fixed; inset: 0; display: none; }
+.view { position: fixed; top: 0; left: 0; right: 0; height: 100vh; height: 100lvh; display: none; }
 .view.active { display: block; }
 
 /* ---------- Scan ---------- */
@@ -85,7 +88,11 @@ a { color: inherit; text-decoration: none; }
 
 /* ---------- Floating shutter: a filled disc inside a ring, like the iPhone camera ---------- */
 .shutter {
-  position: fixed; z-index: 40; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 28px);
+  /* Measured from the top of the full screen, so it sits just above the home indicator
+     even where iOS cuts the page short at the bottom */
+  position: fixed; z-index: 40; left: 50%; bottom: auto;
+  top: calc(100vh - env(safe-area-inset-bottom) - 70px);
+  top: calc(100lvh - env(safe-area-inset-bottom) - 70px);
   width: 62px; height: 62px; border-radius: 50%; background: var(--red);
   transform: translateX(-50%); transition: transform .12s ease;
 }
@@ -98,7 +105,7 @@ a { color: inherit; text-decoration: none; }
 
 /* ---------- Album (full screen) ---------- */
 .sheet {
-  position: fixed; z-index: 20; left: 0; right: 0; top: 0; bottom: 0;
+  position: fixed; z-index: 20; left: 0; right: 0; top: 0; height: 100vh; height: 100lvh;
   background: var(--paper);
   transform: translateY(102%); transition: transform .32s cubic-bezier(.2,.8,.2,1);
   overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
@@ -216,8 +223,28 @@ a { color: inherit; text-decoration: none; }
 
 /* ---------- List ---------- */
 #listWrap { position: absolute; left: 0; right: 0; top: var(--head-h); bottom: 0; display: flex; flex-direction: column; }
+.sortbar { display: flex; gap: 6px; align-items: center; padding: 8px 20px; border-bottom: 1px solid var(--rule); }
+.sortbar .quiet { margin-right: 6px; }
+.sortbar button { padding: 6px 10px; border: 1px solid var(--rule); letter-spacing: .06em; }
+.sortbar button.on { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.listArea { position: relative; flex: 1; min-height: 0; }
+/* A–Z index down the right edge: tap or drag to jump */
+.azindex {
+  position: absolute; z-index: 3; right: 0; top: 0; bottom: var(--zone); width: 28px;
+  display: flex; flex-direction: column; justify-content: center; align-items: center;
+  touch-action: none; user-select: none; -webkit-user-select: none;
+}
+.azindex span { font-family: var(--mono); font-size: 10.5px; font-weight: 500; line-height: 1; padding: 2px 0; width: 100%; text-align: center; color: var(--ink); flex: 0 1 auto; }
+.azindex span.off { color: var(--rule); }
+.azbubble {
+  position: absolute; z-index: 4; left: 50%; top: 40%; transform: translate(-50%, -50%);
+  width: 84px; height: 84px; display: grid; place-items: center;
+  background: var(--ink); color: var(--paper); font-size: 44px; font-weight: 800; font-stretch: 70%;
+  pointer-events: none;
+}
 .searchbar { padding: 12px 20px; border-bottom: 1px solid var(--rule); }
-.list { list-style: none; overflow-y: auto; -webkit-overflow-scrolling: touch; flex: 1; padding-bottom: var(--zone); }
+.list { position: absolute; inset: 0; list-style: none; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: var(--zone); }
+.list.withIndex .rowmain { padding-right: 34px; }
 .swipe {
   display: flex; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none;
   border-bottom: 1px solid var(--rule);

@@ -62,8 +62,18 @@
 
   <div id="listWrap" hidden>
     <div class="searchbar"><input id="q" type="search" placeholder="Search your collection" autocomplete="off" autocorrect="off" enterkeyhint="search"></div>
-    <ul class="list" id="list"></ul>
-    <p class="noresults mono" id="noResults" hidden>No records match</p>
+    <div class="sortbar mono" role="group" aria-label="Sort by">
+      <span class="quiet">Sort</span>
+      <button data-sort="artist">Artist</button>
+      <button data-sort="title">Title</button>
+      <button data-sort="date">Date</button>
+    </div>
+    <div class="listArea">
+      <ul class="list" id="list"></ul>
+      <nav class="azindex" id="az" aria-label="Jump to letter"></nav>
+      <div class="azbubble" id="azBubble" hidden></div>
+      <p class="noresults mono" id="noResults" hidden>No records match</p>
+    </div>
   </div>
 
   <div class="empty" id="empty" hidden>
