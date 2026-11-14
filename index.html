@@ -54,6 +54,12 @@
       <span id="count"></span>
       <button id="clearSamples" class="linkbtn mono" hidden>Remove samples</button>
     </div>
+    <div class="sortbar mono" role="group" aria-label="Sort by">
+      <span class="quiet">Sort</span>
+      <button data-sort="artist">Artist</button>
+      <button data-sort="title">Title</button>
+      <button data-sort="date">Date</button>
+    </div>
   </header>
 
   <div id="crateWrap">
@@ -63,12 +69,6 @@
 
   <div id="listWrap" hidden>
     <div class="searchbar"><input id="q" type="search" placeholder="Search your collection" autocomplete="off" autocorrect="off" enterkeyhint="search"></div>
-    <div class="sortbar mono" role="group" aria-label="Sort by">
-      <span class="quiet">Sort</span>
-      <button data-sort="artist">Artist</button>
-      <button data-sort="title">Title</button>
-      <button data-sort="date">Date</button>
-    </div>
     <div class="listArea">
       <ul class="list" id="list"></ul>
       <nav class="azindex" id="az" aria-label="Jump to letter"></nav>

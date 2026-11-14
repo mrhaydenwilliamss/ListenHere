@@ -145,6 +145,9 @@ function layoutVideo() {
   video.classList.toggle('fadeY', h < H - 1);
   video.classList.toggle('fadeX', w < W - 1 && !(h < H - 1));
   const side = Math.max(120, Math.min(w - 32, h - 32, 640));
+  // fade from the picture's edge all the way to the brackets
+  const fade = h < H - 1 ? (h - side) / 2 : (w - side) / 2;
+  video.style.setProperty('--fade', Math.max(48, fade - 2) + 'px');
   const f = $('#frame').style;
   f.width = side + 'px';
   f.top = (H - h) / 2 + h / 2 + 'px';
@@ -480,7 +483,8 @@ document.querySelectorAll('.seg button').forEach(b => b.onclick = () => {
 });
 
 async function renderCollection() {
-  entries = (await allEntries()).filter(e => displayTitle(e) || e.status === 'identifying');
+  entries = sortEntries((await allEntries()).filter(e => displayTitle(e) || e.status === 'identifying'));
+  document.querySelectorAll('.sortbar button').forEach(b => b.classList.toggle('on', b.dataset.sort === sortBy));
   entryById.clear(); entries.forEach(e => entryById.set(e.id, e));
   document.querySelectorAll('.seg button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
   $('#clearSamples').hidden = !entries.some(e => e.sample);
@@ -702,7 +706,7 @@ $('#crateInfo').onclick = () => entries[focusIndex] && openSheet(entries[focusIn
 
 /* ---------- The list: search as you type, sort, A–Z index, swipe left to delete ---------- */
 const listEl = $('#list'), q = $('#q'), az = $('#az'), bubble = $('#azBubble');
-let sortBy = localStorage.getItem('lh_sort') || 'artist';
+let sortBy = localStorage.getItem('lh_sort') || 'date'; // newest first, as the brief's crate
 const LETTERS = ['#', ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'];
 // Filed the way a record shop files them: "The Cure" under C
 const sortText = s => String(s || '').trim().replace(/^(the|a|an)\s+/i, '');
@@ -713,20 +717,24 @@ function sortValue(e) {
   return sortText(displayArtist(e));
 }
 document.querySelectorAll('.sortbar button').forEach(b => b.onclick = () => {
-  sortBy = b.dataset.sort; localStorage.setItem('lh_sort', sortBy); listEl.scrollTop = 0; renderList();
+  if (sortBy === b.dataset.sort) return;
+  sortBy = b.dataset.sort; localStorage.setItem('lh_sort', sortBy); listEl.scrollTop = 0; renderCollection();
 });
+// One order for both Crate and List: A to Z for artist and title, newest first for date
+function sortEntries(list) {
+  const az = (x, y) => x.localeCompare(y, 'en', { sensitivity: 'base', numeric: true });
+  return list.sort((a, b) => sortBy === 'date'
+    ? b.scannedAt.localeCompare(a.scannedAt)
+    : az(sortValue(a), sortValue(b)) || az(sortText(displayTitle(a)), sortText(displayTitle(b))));
+}
 
 function renderList() {
-  document.querySelectorAll('.sortbar button').forEach(b => b.classList.toggle('on', b.dataset.sort === sortBy));
   const words = norm(q.value) ? q.value.toLowerCase().split(/\s+/).filter(Boolean) : [];
   const shown = entries.filter(e => {
     if (!words.length) return true;
     const hay = [displayTitle(e), displayArtist(e), e.release?.label, e.release?.catno, e.release?.year].join(' ').toLowerCase();
     return words.every(w => hay.includes(w));
   });
-  // Always ascending: A to Z, or oldest scan first
-  const cmp = (x, y) => sortBy === 'date' ? x.localeCompare(y) : x.localeCompare(y, 'en', { sensitivity: 'base', numeric: true });
-  shown.sort((a, b) => cmp(sortValue(a), sortValue(b)) || cmp(sortText(displayTitle(a)), sortText(displayTitle(b))));
 
   const alpha = sortBy !== 'date';
   listEl.innerHTML = shown.map(e => {

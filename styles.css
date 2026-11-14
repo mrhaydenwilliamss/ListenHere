@@ -10,7 +10,7 @@
   --rule: #CFC7B8;
   --red: #D6452A;
   --field: #FFFFFF;
-  --head-h: calc(env(safe-area-inset-top) + 92px);
+  --head-h: calc(env(safe-area-inset-top) + 132px);
   --zone: calc(env(safe-area-inset-bottom) + 96px); /* room kept clear for the floating shutter */
   --display: 'Archivo', 'Helvetica Neue', Arial, sans-serif;
   --mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
@@ -57,19 +57,33 @@ a { color: inherit; text-decoration: none; }
    Where it doesn't reach the screen edges, a blurred copy of the same live feed fills
    the space, and the sharp picture's edges fade into it. */
 #scan video#video { position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: cover; z-index: 1; }
+/* The fade runs the full distance from the picture's edge to the brackets (--fade, set by
+   app.js), on an eased curve so there's no visible start or end to it */
 #scan video#video.fadeY {
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 56px, #000 calc(100% - 56px), transparent 100%);
-          mask-image: linear-gradient(to bottom, transparent 0, #000 56px, #000 calc(100% - 56px), transparent 100%);
+  --m: linear-gradient(to bottom,
+    transparent 0, rgba(0,0,0,.04) calc(var(--fade) * .15), rgba(0,0,0,.14) calc(var(--fade) * .3),
+    rgba(0,0,0,.32) calc(var(--fade) * .45), rgba(0,0,0,.55) calc(var(--fade) * .6), rgba(0,0,0,.78) calc(var(--fade) * .75),
+    rgba(0,0,0,.93) calc(var(--fade) * .88), #000 var(--fade),
+    #000 calc(100% - var(--fade)), rgba(0,0,0,.93) calc(100% - var(--fade) * .88), rgba(0,0,0,.78) calc(100% - var(--fade) * .75),
+    rgba(0,0,0,.55) calc(100% - var(--fade) * .6), rgba(0,0,0,.32) calc(100% - var(--fade) * .45), rgba(0,0,0,.14) calc(100% - var(--fade) * .3),
+    rgba(0,0,0,.04) calc(100% - var(--fade) * .15), transparent 100%);
+  -webkit-mask-image: var(--m); mask-image: var(--m);
 }
 #scan video#video.fadeX {
-  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 56px, #000 calc(100% - 56px), transparent 100%);
-          mask-image: linear-gradient(to right, transparent 0, #000 56px, #000 calc(100% - 56px), transparent 100%);
+  --m: linear-gradient(to right,
+    transparent 0, rgba(0,0,0,.04) calc(var(--fade) * .15), rgba(0,0,0,.14) calc(var(--fade) * .3),
+    rgba(0,0,0,.32) calc(var(--fade) * .45), rgba(0,0,0,.55) calc(var(--fade) * .6), rgba(0,0,0,.78) calc(var(--fade) * .75),
+    rgba(0,0,0,.93) calc(var(--fade) * .88), #000 var(--fade),
+    #000 calc(100% - var(--fade)), rgba(0,0,0,.93) calc(100% - var(--fade) * .88), rgba(0,0,0,.78) calc(100% - var(--fade) * .75),
+    rgba(0,0,0,.55) calc(100% - var(--fade) * .6), rgba(0,0,0,.32) calc(100% - var(--fade) * .45), rgba(0,0,0,.14) calc(100% - var(--fade) * .3),
+    rgba(0,0,0,.04) calc(100% - var(--fade) * .15), transparent 100%);
+  -webkit-mask-image: var(--m); mask-image: var(--m);
 }
 /* Blurred backdrop: drawn at quarter size, then scaled up (cheap for the phone, extra soft) */
 #scan video.bg {
   position: absolute; z-index: 0; left: 37.5%; top: 37.5%; width: 25%; height: 25%;
   object-fit: cover; transform: scale(4.5); transform-origin: 50% 50%;
-  filter: blur(6px) brightness(.72) saturate(1.15);
+  filter: blur(11px) brightness(.82) saturate(1.2); /* heavy: reads as soft colour, not a second image */
   pointer-events: none;
 }
 #scan .freeze { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
@@ -83,11 +97,11 @@ a { color: inherit; text-decoration: none; }
 .topbar > * { pointer-events: auto; }
 .topbar img { width: 20px; height: 20px; filter: invert(1) drop-shadow(0 1px 2px rgba(0,0,0,.5)); mix-blend-mode: normal; }
 .wordmark { font-stretch: 75%; font-weight: 800; letter-spacing: .08em; font-size: 14px; text-shadow: 0 1px 3px rgba(0,0,0,.55); }
-/* Translucent pill only behind the button, for legibility over any image */
+/* Matches the Crate / List switch: square, outlined, condensed capitals */
 .toCollection {
-  margin-left: auto; color: #fff; padding: 9px 14px; border-radius: 999px;
-  font-weight: 700; font-stretch: 80%; font-size: 12.5px; letter-spacing: .08em; text-transform: uppercase;
-  background: rgba(0,0,0,.32); -webkit-backdrop-filter: blur(14px) saturate(140%); backdrop-filter: blur(14px) saturate(140%);
+  margin-left: auto; color: #fff; border: 1.5px solid #fff; padding: 7px 12px;
+  font-weight: 700; font-stretch: 80%; font-size: 13px; letter-spacing: .06em; text-transform: uppercase;
+  background: rgba(0,0,0,.25);
 }
 
 /* Brackets: a near full-width square. Sized by the screen; app.js crops the photo to match */
@@ -282,7 +296,7 @@ a { color: inherit; text-decoration: none; }
 
 /* ---------- List ---------- */
 #listWrap { position: absolute; left: 0; right: 0; top: var(--head-h); bottom: 0; display: flex; flex-direction: column; }
-.sortbar { display: flex; gap: 6px; align-items: center; padding: 8px 20px; border-bottom: 1px solid var(--rule); }
+.sortbar { display: flex; gap: 6px; align-items: center; margin-top: 10px; }
 .sortbar .quiet { margin-right: 6px; }
 .sortbar button { padding: 6px 10px; border: 1px solid var(--rule); letter-spacing: .06em; }
 .sortbar button.on { background: var(--ink); color: var(--paper); border-color: var(--ink); }
