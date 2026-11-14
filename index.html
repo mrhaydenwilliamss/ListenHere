@@ -55,6 +55,15 @@
 </div>
 
 <section>
+  <h2>0 · Identify a cover or label</h2>
+  <button id="shutter" class="primary">Photograph cover or label</button>
+  <div class="out">Fill the square with the cover, or the round label in the middle of the record.</div>
+  <div class="out mono" id="idOut"></div>
+  <img class="thumb" id="art" alt="" hidden style="width:140px;height:140px">
+  <div id="tracks"></div>
+</section>
+
+<section>
   <h2>1 · Camera</h2>
   <button id="startCam">Restart camera</button>
   <button id="openSheet">Slide a sheet over the camera</button>
@@ -220,6 +229,55 @@ function setYouTube(query) {
 setYouTube('Radiohead Weird Fishes / Arpeggi');
 ['ytA', 'ytB', 'ytC'].forEach(id => $(id).addEventListener('click', () => { R['last link tapped'] = id; }));
 
+// ---------- 0. Identify a cover or label ----------
+let idCount = 0;
+const ytUrl = q => `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`;
+$('shutter').onclick = async () => {
+  if (video.readyState < 2) { $('idOut').textContent = 'Camera not ready.'; return; }
+  const t0 = performance.now();
+  // Centre square crop, shrunk to 1024 px, so the upload is small and fast
+  const vw = video.videoWidth, vh = video.videoHeight, side = Math.min(vw, vh);
+  const c = document.createElement('canvas'); c.width = c.height = Math.min(1024, side);
+  c.getContext('2d').drawImage(video, (vw - side) / 2, (vh - side) / 2, side, side, 0, 0, c.width, c.height);
+  const dataUrl = c.toDataURL('image/jpeg', 0.8);
+  savePhoto('identify test');
+  $('idOut').textContent = 'Identifying…'; $('tracks').innerHTML = ''; $('art').hidden = true;
+  $('shutter').disabled = true;
+  try {
+    const r = await fetch('/api/identify', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: dataUrl.split(',')[1] })
+    });
+    const j = await r.json();
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
+    idCount++;
+    if (!r.ok) throw new Error(j.error || r.status);
+    const g = j.guess || {};
+    const guessLine = `Gemini saw a ${g.kind}: ${g.artist || '?'} — ${g.album || '?'}` +
+      (g.catalogue_number ? ` [${g.catalogue_number}]` : '') + ` (confidence ${g.confidence ?? '?'})`;
+    if (!j.found) {
+      $('idOut').textContent = `${guessLine}\nNo MusicBrainz match. ${secs} s total.`;
+      log(`identify ${idCount}`, `${g.kind}: ${g.artist} — ${g.album}, NO MATCH, ${secs} s`);
+      return;
+    }
+    const rel = j.release;
+    $('idOut').textContent = `${guessLine}\nMatched: ${rel.artist} — ${rel.title}${rel.year ? ' (' + rel.year + ')' : ''} · ${rel.format}\n` +
+      `${secs} s total (Gemini ${(j.timings.gemini / 1000).toFixed(1)} s, model ${j.model})`;
+    log(`identify ${idCount}`, `${g.kind}: ${rel.artist} — ${rel.title}, ${secs} s (Gemini ${(j.timings.gemini / 1000).toFixed(1)} s)`);
+    $('art').src = rel.artwork; $('art').hidden = false;
+    $('art').onerror = () => { $('art').hidden = true; };
+    rel.tracks.forEach(tr => {
+      const a = document.createElement('a');
+      a.className = 'btn'; a.href = ytUrl(`${rel.artist} ${tr.title}`);
+      a.textContent = `${tr.number}  ${tr.title}  ↗`;
+      $('tracks').appendChild(a);
+    });
+  } catch (e) {
+    $('idOut').textContent = 'Identify failed: ' + e.message;
+    log(`identify ${idCount}`, 'FAILED ' + e.message);
+  } finally { $('shutter').disabled = false; }
+};
+
 // ---------- 4. Location ----------
 $('locBtn').onclick = () => {
   $('locOut').textContent = 'Asking for location…';
@@ -230,13 +288,10 @@ $('locBtn').onclick = () => {
     log('location', `ok in ${ms} ms, ±${Math.round(accuracy)} m`);
     $('locOut').textContent = `${lat.toFixed(5)}, ${lon.toFixed(5)} (±${Math.round(accuracy)} m, ${ms} ms)\nLooking for record shops within 300 m…`;
     try {
-      const query = `[out:json][timeout:10];nwr(around:300,${lat},${lon})[shop=music];out center 5;`;
-      const r = await fetch('https://overpass-api.de/api/interpreter', {
-        method: 'POST', body: 'data=' + encodeURIComponent(query),
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-      });
+      const r = await fetch(`/api/shops?lat=${lat}&lon=${lon}`);
       const j = await r.json();
-      const names = (j.elements || []).map(e => e.tags && e.tags.name).filter(Boolean);
+      if (!r.ok) throw new Error(j.error || r.status);
+      const names = j.shops.map(s => s.name);
       $('locOut').textContent += '\n' + (names.length ? 'Nearby: ' + names.join(', ') : 'No record shops mapped within 300 m.');
       log('nearby shops', names.length ? names.join(', ') : 'none found');
     } catch (e) { $('locOut').textContent += '\nShop lookup failed: ' + e.message; log('nearby shops', 'FAILED ' + e.message); }
