@@ -1,373 +1,69 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en-AU">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="LH Test">
+<meta name="apple-mobile-web-app-title" content="Listen Here">
+<meta name="theme-color" content="#F1ECE2">
+<title>Listen Here</title>
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
-<title>Listen Here — iPhone test</title>
-<style>
-  :root { --paper:#F1ECE2; --ink:#15130F; --red:#D6452A; --quiet:#6b655b; }
-  * { box-sizing:border-box; }
-  body { margin:0; background:var(--paper); color:var(--ink);
-    font:15px/1.4 -apple-system, system-ui, sans-serif;
-    padding:env(safe-area-inset-top) 0 calc(env(safe-area-inset-bottom) + 24px); }
-  .mono { font-family:ui-monospace, Menlo, monospace; font-size:12px; letter-spacing:.02em; }
-  header { padding:14px 16px 8px; }
-  h1 { font-size:20px; margin:0; letter-spacing:.04em; text-transform:uppercase; }
-  #camWrap { position:relative; background:#000; aspect-ratio:1/1; max-width:520px; margin:0 auto; overflow:hidden; }
-  video { width:100%; height:100%; object-fit:cover; display:block; }
-  #status { position:absolute; left:0; right:0; bottom:0; padding:8px 12px; color:#fff;
-    background:rgba(0,0,0,.55); }
-  #sheet { position:absolute; inset:30% 0 0 0; background:var(--paper); padding:16px;
-    transform:translateY(100%); transition:transform .3s ease; border-top:2px solid var(--ink); }
-  #sheet.open { transform:translateY(0); }
-  section { max-width:520px; margin:0 auto; padding:14px 16px; border-bottom:1px solid #d6cfc2; }
-  h2 { font-size:13px; margin:0 0 8px; letter-spacing:.08em; text-transform:uppercase; }
-  button, a.btn { display:block; width:100%; text-align:left; padding:13px 14px; margin:6px 0;
-    background:none; border:1.5px solid var(--ink); border-radius:0; color:var(--ink);
-    font:inherit; text-decoration:none; }
-  button.primary { background:var(--red); border-color:var(--red); color:#fff; }
-  .out { margin-top:6px; color:var(--quiet); white-space:pre-wrap; word-break:break-word; }
-  img.thumb { width:72px; height:72px; object-fit:cover; margin-top:8px; border:1px solid var(--ink); }
-</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-<header>
-  <h1>Listen Here · iPhone test</h1>
-  <div class="mono out" id="env"></div>
-</header>
 
-<div id="camWrap">
+<!-- SCAN: opens straight into the camera -->
+<section id="scan" class="view active" aria-label="Scan">
   <video id="video" playsinline muted autoplay></video>
-  <div id="status" class="mono">STARTING CAMERA…</div>
-  <div id="sheet">
-    <h2>Sheet over the camera</h2>
-    <div class="out">The camera should keep running behind this. Close it and check the picture is still live.</div>
-    <button id="closeSheet">Close sheet</button>
+  <img id="freeze" class="freeze" alt="" hidden>
+  <header class="topbar">
+    <img src="/favicon-32.png" alt="">
+    <span class="wordmark">LISTEN HERE</span>
+  </header>
+  <div class="frame" id="frame" aria-hidden="true">
+    <i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i>
+    <div class="ring"></div>
   </div>
-</div>
-
-<section>
-  <h2>0 · Identify a cover or label</h2>
-  <button id="shutter" class="primary">Photograph cover or label</button>
-  <div class="out">Fill the square with the cover, or the round label in the middle of the record.</div>
-  <div class="out mono" id="idOut"></div>
-  <img class="thumb" id="art" alt="" hidden style="width:140px;height:140px">
-  <div id="tracks"></div>
+  <button id="startCam" class="startcam" hidden>Tap to start camera</button>
+  <p class="hint mono" id="hint">Fill the frame with a cover or label</p>
 </section>
 
-<section>
-  <h2>1 · Camera</h2>
-  <button id="startCam">Restart camera</button>
-  <button id="openSheet">Slide a sheet over the camera</button>
-  <div class="out mono" id="camOut"></div>
+<!-- COLLECTION: the crate -->
+<section id="collection" class="view" aria-label="Collection">
+  <header class="colhead">
+    <h1>Collection</h1>
+    <div class="right mono">
+      <button id="clearSamples" class="mono linkbtn" hidden>Remove samples</button>
+      <span id="count"></span>
+    </div>
+  </header>
+  <div class="crate" id="crate"></div>
+  <div class="crate-info" id="crateInfo"></div>
+  <div class="empty" id="empty" hidden>
+    <p>Nothing in the crate yet</p>
+    <div class="mono" style="color:var(--quiet)">Every record you scan lands here</div>
+    <button class="btn" id="addSamples">Fill with sample records</button>
+  </div>
 </section>
 
-<section>
-  <h2>2 · Barcode</h2>
-  <div class="out">Point the camera at the barcode on the back of a record. No button needed.</div>
-  <div class="out mono" id="bcOut">Waiting…</div>
-</section>
+<!-- ALBUM: slides up over the camera -->
+<aside id="sheet" class="sheet" aria-label="Album" aria-hidden="true"></aside>
 
-<section>
-  <h2>3 · YouTube links</h2>
-  <div class="out" id="ytLabel">Search: Radiohead Weird Fishes / Arpeggi</div>
-  <a class="btn" id="ytA" href="#">A · Normal YouTube link</a>
-  <a class="btn" id="ytB" href="#" target="_blank" rel="noopener">B · Normal link, new window</a>
-  <a class="btn" id="ytC" href="#">C · YouTube app link (youtube://)</a>
-  <div class="out">Tap each one, then come back. Note which open the YouTube app.</div>
-  <div class="out mono" id="ytOut"></div>
-</section>
+<!-- NAVIGATION -->
+<nav class="tabbar">
+  <button class="tab active" data-view="scan">Scan</button>
+  <button id="shutter" class="shutter" aria-label="Photograph cover or label"></button>
+  <button class="tab" data-view="collection">Collection</button>
+</nav>
 
-<section>
-  <h2>4 · Location + nearby record shop</h2>
-  <button id="locBtn">Test location</button>
-  <div class="out mono" id="locOut"></div>
-</section>
-
-<section>
-  <h2>5 · Saving</h2>
-  <button id="snapBtn" class="primary">Capture photo &amp; save</button>
-  <button id="persistBtn">Ask iPhone to keep saved data</button>
-  <div class="out mono" id="saveOut"></div>
-  <img class="thumb" id="thumb" alt="" hidden>
-</section>
-
-<section>
-  <h2>6 · Send me the results</h2>
-  <button id="copyBtn" class="primary">Copy results</button>
-  <div class="out">Then paste them into our chat, with anything you noticed (e.g. “asked for camera permission again”).</div>
-</section>
-
-<script type="module">
-const $ = id => document.getElementById(id);
-const R = {}; // results we report back
-const log = (k, v) => { R[k] = v; };
-
-// ---------- Environment ----------
-const standalone = navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
-let launches = 0;
-try { launches = Number(localStorage.getItem('lh_launches') || 0) + 1; localStorage.setItem('lh_launches', launches); } catch (e) {}
-log('mode', standalone ? 'home screen app' : 'Safari tab');
-log('launch number', launches);
-log('device', navigator.userAgent);
-$('env').textContent = `${standalone ? 'HOME SCREEN APP' : 'SAFARI TAB'} · LAUNCH ${launches}`;
-
-// ---------- 1. Camera ----------
-const video = $('video');
-let stream = null, camStartedAt = 0;
-async function startCamera() {
-  try {
-    if (stream) stream.getTracks().forEach(t => t.stop());
-    const t0 = performance.now();
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 1280 } },
-      audio: false
-    });
-    video.srcObject = stream;
-    await video.play();
-    camStartedAt = performance.now();
-    const ms = Math.round(camStartedAt - t0);
-    log('camera', `ok, started in ${ms} ms`);
-    $('camOut').textContent = `Camera on (${ms} ms, ${video.videoWidth}×${video.videoHeight}).`;
-    $('status').textContent = 'LOOKING FOR A BARCODE…';
-    stream.getVideoTracks()[0].addEventListener('ended', () => { R['camera stopped by iOS'] = 'yes'; });
-  } catch (e) {
-    log('camera', 'FAILED: ' + e.name + ' ' + e.message);
-    $('camOut').textContent = 'Camera failed: ' + e.name + ' — ' + e.message;
-    $('status').textContent = 'NO CAMERA';
-  }
-}
-$('startCam').onclick = startCamera;
-$('openSheet').onclick = () => $('sheet').classList.add('open');
-$('closeSheet').onclick = () => {
-  $('sheet').classList.remove('open');
-  const live = stream && stream.getVideoTracks()[0].readyState === 'live';
-  log('camera after sheet', live ? 'still live' : 'STOPPED');
-  $('camOut').textContent = live ? 'Camera still live after sheet. Good.' : 'Camera stopped after sheet.';
-};
-
-// Returning from YouTube
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState !== 'visible' || !stream) return;
-  const live = stream.getVideoTracks()[0].readyState === 'live' && !video.paused;
-  log('camera after leaving app', live ? 'still live' : 'had to restart');
-  $('ytOut').textContent = 'Back in the app. Camera ' + (live ? 'still live.' : 'had stopped — restarting.');
-  if (!live) startCamera();
-});
-
-// ---------- 2. Barcode ----------
-let Detector = null;
-const sources = [
-  'https://cdn.jsdelivr.net/npm/barcode-detector@3/+esm',
-  'https://cdn.jsdelivr.net/npm/barcode-detector@2/+esm'
-];
-async function loadDetector() {
-  for (const url of sources) {
-    try {
-      const t0 = performance.now();
-      const mod = await import(url);
-      const D = mod.BarcodeDetector || (mod.default && mod.default.BarcodeDetector) || mod.default;
-      if (D) { log('barcode library', `loaded in ${Math.round(performance.now() - t0)} ms`); return D; }
-    } catch (e) { /* try next */ }
-  }
-  log('barcode library', 'FAILED to load');
-  $('bcOut').textContent = 'Barcode library failed to load.';
-  return null;
-}
-let detector = null, busy = false, coolUntil = 0, firstFound = false;
-async function scanLoop() {
-  requestAnimationFrame(scanLoop);
-  if (!detector || busy || video.readyState < 2 || performance.now() < coolUntil) return;
-  busy = true;
-  try {
-    const t0 = performance.now();
-    const codes = await detector.detect(video);
-    R['barcode read time per frame'] = Math.round(performance.now() - t0) + ' ms';
-    if (codes.length) {
-      const code = codes[0].rawValue;
-      coolUntil = performance.now() + 4000;
-      if (!firstFound) { firstFound = true; log('first barcode', `${code} after ${Math.round((performance.now() - camStartedAt) / 1000)} s of camera`); }
-      $('status').textContent = 'BARCODE ' + code;
-      $('bcOut').textContent = `Read ${code} (${codes[0].format}). Looking it up…`;
-      lookup(code);
-      savePhoto('barcode ' + code);
-    }
-  } catch (e) { R['barcode error'] = e.message; }
-  busy = false;
-}
-async function lookup(code) {
-  try {
-    const t0 = performance.now();
-    const r = await fetch(`https://musicbrainz.org/ws/2/release?query=barcode:${encodeURIComponent(code)}&fmt=json&limit=5`);
-    const j = await r.json();
-    const ms = Math.round(performance.now() - t0);
-    const rel = j.releases && j.releases[0];
-    if (!rel) { $('bcOut').textContent = `Read ${code}. MusicBrainz has no match (${ms} ms).`; log('musicbrainz', 'no match for ' + code); return; }
-    const artist = (rel['artist-credit'] || []).map(a => a.name + (a.joinphrase || '')).join('');
-    $('bcOut').textContent = `${artist} — ${rel.title}${rel.date ? ' (' + rel.date.slice(0, 4) + ')' : ''}\n${j.releases.length} release(s) found in ${ms} ms.`;
-    log('musicbrainz', `${artist} — ${rel.title}, ${ms} ms`);
-    setYouTube(`${artist} ${rel.title}`);
-  } catch (e) { $('bcOut').textContent = 'Lookup failed: ' + e.message; log('musicbrainz', 'FAILED ' + e.message); }
-}
-
-// ---------- 3. YouTube ----------
-function setYouTube(query) {
-  const q = encodeURIComponent(query);
-  $('ytLabel').textContent = 'Search: ' + query;
-  $('ytA').href = `https://www.youtube.com/results?search_query=${q}`;
-  $('ytB').href = `https://www.youtube.com/results?search_query=${q}`;
-  $('ytC').href = `youtube://www.youtube.com/results?search_query=${q}`;
-}
-setYouTube('Radiohead Weird Fishes / Arpeggi');
-['ytA', 'ytB', 'ytC'].forEach(id => $(id).addEventListener('click', () => { R['last link tapped'] = id; }));
-
-// ---------- 0. Identify a cover or label ----------
-let idCount = 0;
-const ytUrl = q => `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`;
-$('shutter').onclick = async () => {
-  if (video.readyState < 2) { $('idOut').textContent = 'Camera not ready.'; return; }
-  const t0 = performance.now();
-  // Centre square crop, shrunk to 1024 px, so the upload is small and fast
-  const vw = video.videoWidth, vh = video.videoHeight, side = Math.min(vw, vh);
-  const c = document.createElement('canvas'); c.width = c.height = Math.min(1024, side);
-  c.getContext('2d').drawImage(video, (vw - side) / 2, (vh - side) / 2, side, side, 0, 0, c.width, c.height);
-  const dataUrl = c.toDataURL('image/jpeg', 0.8);
-  savePhoto('identify test');
-  $('idOut').textContent = 'Identifying…'; $('tracks').innerHTML = ''; $('art').hidden = true;
-  $('shutter').disabled = true;
-  try {
-    const r = await fetch('/api/identify', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image: dataUrl.split(',')[1] })
-    });
-    const j = await r.json();
-    const secs = ((performance.now() - t0) / 1000).toFixed(1);
-    idCount++;
-    if (!r.ok) throw new Error(j.error || r.status);
-    const g = j.guess || {};
-    const guessLine = `Gemini saw a ${g.kind}: ${g.artist || '?'} — ${g.album || '?'}` +
-      (g.catalogue_number ? ` [${g.catalogue_number}]` : '') + ` (confidence ${g.confidence ?? '?'})`;
-    if (!j.found) {
-      $('idOut').textContent = `${guessLine}\nNo MusicBrainz match. ${secs} s total.`;
-      log(`identify ${idCount}`, `${g.kind}: ${g.artist} — ${g.album}, NO MATCH, ${secs} s`);
-      return;
-    }
-    const rel = j.release;
-    $('idOut').textContent = `${guessLine}\nMatched: ${rel.artist} — ${rel.title}${rel.year ? ' (' + rel.year + ')' : ''} · ${rel.format}\n` +
-      `${secs} s total (Gemini ${(j.timings.gemini / 1000).toFixed(1)} s, model ${j.model})`;
-    log(`identify ${idCount}`, `${g.kind}: ${rel.artist} — ${rel.title}, ${secs} s (Gemini ${(j.timings.gemini / 1000).toFixed(1)} s)`);
-    $('art').src = rel.artwork; $('art').hidden = false;
-    $('art').onerror = () => { $('art').hidden = true; };
-    rel.tracks.forEach(tr => {
-      const a = document.createElement('a');
-      a.className = 'btn'; a.href = ytUrl(`${rel.artist} ${tr.title}`);
-      a.textContent = `${tr.number}  ${tr.title}  ↗`;
-      $('tracks').appendChild(a);
-    });
-  } catch (e) {
-    $('idOut').textContent = 'Identify failed: ' + e.message;
-    log(`identify ${idCount}`, 'FAILED ' + e.message);
-  } finally { $('shutter').disabled = false; }
-};
-
-// ---------- 4. Location ----------
-$('locBtn').onclick = () => {
-  $('locOut').textContent = 'Asking for location…';
-  const t0 = performance.now();
-  navigator.geolocation.getCurrentPosition(async pos => {
-    const { latitude: lat, longitude: lon, accuracy } = pos.coords;
-    const ms = Math.round(performance.now() - t0);
-    log('location', `ok in ${ms} ms, ±${Math.round(accuracy)} m`);
-    $('locOut').textContent = `${lat.toFixed(5)}, ${lon.toFixed(5)} (±${Math.round(accuracy)} m, ${ms} ms)\nLooking for record shops within 300 m…`;
-    try {
-      const r = await fetch(`/api/shops?lat=${lat}&lon=${lon}`);
-      const j = await r.json();
-      if (!r.ok) throw new Error(j.error || r.status);
-      const names = j.shops.map(s => s.name);
-      $('locOut').textContent += '\n' + (names.length ? 'Nearby: ' + names.join(', ') : 'No record shops mapped within 300 m.');
-      log('nearby shops', names.length ? names.join(', ') : 'none found');
-    } catch (e) { $('locOut').textContent += '\nShop lookup failed: ' + e.message; log('nearby shops', 'FAILED ' + e.message); }
-  }, err => {
-    log('location', 'FAILED: ' + err.message);
-    $('locOut').textContent = 'Location failed: ' + err.message;
-  }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 });
-};
-
-// ---------- 5. Saving (IndexedDB) ----------
-function db() {
-  return new Promise((res, rej) => {
-    const req = indexedDB.open('lh-test', 1);
-    req.onupgradeneeded = () => req.result.createObjectStore('scans', { keyPath: 'id', autoIncrement: true });
-    req.onsuccess = () => res(req.result);
-    req.onerror = () => rej(req.error);
-  });
-}
-async function countSaved() {
-  try {
-    const d = await db();
-    return await new Promise(res => { const r = d.transaction('scans').objectStore('scans').count(); r.onsuccess = () => res(r.result); });
-  } catch (e) { return 'error'; }
-}
-async function savePhoto(label) {
-  if (video.readyState < 2) return;
-  const at = new Date().toISOString(); // timestamp at the moment of capture
-  const c = document.createElement('canvas');
-  const w = Math.min(video.videoWidth, 1200);
-  c.width = w; c.height = Math.round(w * video.videoHeight / video.videoWidth);
-  c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
-  const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.82));
-  try {
-    const d = await db();
-    await new Promise((res, rej) => {
-      const tx = d.transaction('scans', 'readwrite');
-      tx.objectStore('scans').add({ at, label, photo: blob });
-      tx.oncomplete = res; tx.onerror = () => rej(tx.error);
-    });
-    $('thumb').src = URL.createObjectURL(blob); $('thumb').hidden = false;
-    const n = await countSaved();
-    log('saved photos', n);
-    $('saveOut').textContent = `Saved "${label}" at ${new Date(at).toLocaleTimeString()}. ${n} photo(s) stored on this phone.`;
-  } catch (e) { log('saving', 'FAILED ' + e.message); $('saveOut').textContent = 'Save failed: ' + e.message; }
-}
-$('snapBtn').onclick = () => savePhoto('cover test');
-$('persistBtn').onclick = async () => {
-  if (!navigator.storage || !navigator.storage.persist) { $('saveOut').textContent = 'Persistent storage not available.'; log('persistent storage', 'not available'); return; }
-  const ok = await navigator.storage.persist();
-  log('persistent storage', ok ? 'granted' : 'not granted');
-  $('saveOut').textContent = 'Keep saved data: ' + (ok ? 'granted' : 'not granted');
-};
-
-// ---------- 6. Results ----------
-$('copyBtn').onclick = async () => {
-  R['saved photos'] = await countSaved();
-  const text = 'LISTEN HERE TEST RESULTS\n' + Object.entries(R).map(([k, v]) => `${k}: ${v}`).join('\n');
-  try { await navigator.clipboard.writeText(text); $('copyBtn').textContent = 'Copied — paste into the chat'; }
-  catch (e) { prompt('Copy this:', text); }
-};
-
-// ---------- Go ----------
-(async () => {
-  const n = await countSaved();
-  $('saveOut').textContent = `${n} photo(s) already stored on this phone.`;
-  log('photos found at launch', n);
-  await startCamera();
-  Detector = await loadDetector();
-  if (Detector) {
-    try {
-      detector = new Detector({ formats: ['ean_13', 'upc_a', 'ean_8', 'upc_e'] });
-      $('bcOut').textContent = 'Ready. Point at a barcode.';
-      scanLoop();
-    } catch (e) { $('bcOut').textContent = 'Barcode reader failed: ' + e.message; log('barcode library', 'FAILED ' + e.message); }
-  }
-})();
-</script>
+<script type="module" src="/app.js"></script>
 </body>
 </html>
