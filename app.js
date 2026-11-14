@@ -117,8 +117,8 @@ async function startCamera() {
     $('#hint').textContent = e.name === 'NotAllowedError' ? 'Camera access needed to scan' : 'Camera unavailable';
   }
 }
-const cameraLive = () => stream && stream.getVideoTracks()[0]?.readyState === 'live' && !video.paused;
-function ensureCamera() { if (!cameraLive()) startCamera(); }
+const cameraLive = () => stream && stream.getVideoTracks()[0]?.readyState === 'live';
+function ensureCamera() { if (!cameraLive()) startCamera(); else if (video.paused) video.play().catch(() => {}); $('#frame').classList.remove('shot'); }
 $('#startCam').onclick = startCamera;
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
@@ -126,16 +126,30 @@ document.addEventListener('visibilitychange', () => {
   retryUnfinished();
 });
 
-// Grab the centre square of the camera: a full photo for the collection, a small one for Gemini
+// Take exactly what's inside the on-screen frame.
+// The preview fills the screen by zooming the camera feed ("cover"), so we work out
+// which part of the feed sits behind the frame and crop just that.
+function frameCrop() {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const box = video.getBoundingClientRect(), f = $('#frame').getBoundingClientRect();
+  const scale = Math.max(box.width / vw, box.height / vh);       // how much the feed is zoomed
+  const ox = box.left + (box.width - vw * scale) / 2;            // where the feed's edge sits on screen
+  const oy = box.top + (box.height - vh * scale) / 2;
+  let side = Math.min(f.width, f.height) / scale;
+  let sx = (f.left - ox) / scale, sy = (f.top - oy) / scale;
+  side = Math.min(side, vw, vh);
+  sx = Math.max(0, Math.min(vw - side, sx)); sy = Math.max(0, Math.min(vh - side, sy));
+  return { sx, sy, side };
+}
 async function capture() {
-  const vw = video.videoWidth, vh = video.videoHeight, side = Math.min(vw, vh);
+  const { sx, sy, side } = frameCrop();
   const make = (size, q) => new Promise(res => {
     const c = document.createElement('canvas');
-    c.width = c.height = Math.min(size, side);
-    c.getContext('2d').drawImage(video, (vw - side) / 2, (vh - side) / 2, side, side, 0, 0, c.width, c.height);
+    c.width = c.height = Math.round(Math.min(size, side));
+    c.getContext('2d').drawImage(video, sx, sy, side, side, 0, 0, c.width, c.height);
     c.toBlob(res, 'image/jpeg', q);
   });
-  const [photo, small] = await Promise.all([make(1200, 0.85), make(768, 0.8)]);
+  const [photo, small] = await Promise.all([make(1200, 0.88), make(768, 0.8)]);
   return { photo, small };
 }
 
@@ -160,9 +174,10 @@ $('#shutter').onclick = async () => {
   const scannedAt = new Date().toISOString(); // the actual moment of scanning
   setBusy(true, 'Reading…');
   try {
+    $('#frame').classList.add('shot'); // frame turns shutter-red the instant you tap
     const { photo, small } = await capture();
+    video.pause(); // freeze the preview exactly as framed
     const entry = { id: newId(), scannedAt, source: 'photo', status: 'identifying', photo };
-    $('#freeze').src = photoUrl(entry); $('#freeze').hidden = false;
     saveEntry(entry);  // saved immediately; finished in the background
     openSheet(entry);
     await identify(entry, await blobToBase64(small));
@@ -294,7 +309,8 @@ function closeSheet() {
   sheet.classList.remove('open');
   sheet.setAttribute('aria-hidden', 'true');
   $('#collection').classList.remove('withSheet');
-  $('#freeze').hidden = true;
+  if (view === 'scan' && video.paused) video.play().catch(() => {}); // unfreeze the preview
+  $('#frame').classList.remove('shot');
 }
 
 function renderSheet(e) {
