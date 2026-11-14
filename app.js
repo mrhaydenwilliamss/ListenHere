@@ -110,7 +110,10 @@ async function startCamera() {
     });
     video.srcObject = stream;
     videoBg.srcObject = stream;          // same live feed, shown blurred behind
-    await video.play();
+    // Low Power Mode can stop videos starting by themselves: if so, the first touch starts them
+    try { await video.play(); } catch {
+      addEventListener('pointerdown', () => resumePreview(), { once: true, capture: true });
+    }
     videoBg.play().catch(() => {});
     layoutVideo();
     $('#startCam').hidden = true;

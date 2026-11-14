@@ -80,6 +80,13 @@ a { color: inherit; text-decoration: none; }
   -webkit-mask-image: var(--m); mask-image: var(--m);
 }
 /* Blurred backdrop: drawn at quarter size, then scaled up (cheap for the phone, extra soft) */
+/* The camera is a picture, not a video player: no play/pause or other system controls, no taps */
+#scan video { pointer-events: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+#scan video::-webkit-media-controls,
+#scan video::-webkit-media-controls-panel,
+#scan video::-webkit-media-controls-overlay-play-button,
+#scan video::-webkit-media-controls-start-playback-button,
+#scan video::-webkit-media-controls-play-button { display: none !important; -webkit-appearance: none; opacity: 0 !important; }
 #scan video.bg {
   position: absolute; z-index: 0; left: 37.5%; top: 37.5%; width: 25%; height: 25%;
   object-fit: cover; transform: scale(4.5); transform-origin: 50% 50%;
