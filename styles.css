@@ -11,7 +11,7 @@
   --red: #D6452A;
   --field: #FFFFFF;
   --head-h: calc(env(safe-area-inset-top) + 92px);
-  --tab-h: calc(76px + env(safe-area-inset-bottom));
+  --zone: calc(env(safe-area-inset-bottom) + 112px); /* room kept clear for the floating shutter */
   --display: 'Archivo', 'Helvetica Neue', Arial, sans-serif;
   --mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
   color-scheme: light dark;
@@ -45,7 +45,7 @@ a { color: inherit; text-decoration: none; }
 .play { width: 10px; height: 12px; display: inline-block; flex: none; }
 
 /* ---------- Views ---------- */
-.view { position: fixed; inset: 0 0 var(--tab-h) 0; display: none; }
+.view { position: fixed; inset: 0; display: none; }
 .view.active { display: block; }
 
 /* ---------- Scan ---------- */
@@ -59,6 +59,11 @@ a { color: inherit; text-decoration: none; }
 }
 .topbar img { width: 22px; height: 22px; filter: invert(1); mix-blend-mode: screen; }
 .wordmark { font-stretch: 75%; font-weight: 800; letter-spacing: .08em; font-size: 15px; }
+.toCollection {
+  margin-left: auto; color: #fff; border: 1.5px solid #fff; padding: 8px 12px;
+  font-weight: 700; font-stretch: 80%; font-size: 13px; letter-spacing: .08em; text-transform: uppercase;
+  background: rgba(0,0,0,.25);
+}
 .frame {
   position: absolute; z-index: 2; left: 50%; top: 46%;
   width: min(78vw, 46vh, 440px); aspect-ratio: 1;
@@ -71,35 +76,29 @@ a { color: inherit; text-decoration: none; }
 .frame .br { bottom: 0; right: 0; border-bottom-width: 2px; border-right-width: 2px; }
 .frame .ring { position: absolute; inset: 22%; border-radius: 50%; border: 1px dashed rgba(255,255,255,.45); }
 .frame.busy i { border-color: var(--red); }
-.hint { position: absolute; z-index: 2; left: 0; right: 0; bottom: 22px; text-align: center; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.6); }
+.hint { position: absolute; z-index: 2; left: 0; right: 0; bottom: calc(var(--zone) + 6px); text-align: center; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.6); }
 .startcam {
   position: absolute; z-index: 3; left: 50%; top: 46%; transform: translate(-50%, -50%);
   background: var(--paper); color: var(--ink); padding: 18px 22px;
   font-weight: 700; font-stretch: 80%; letter-spacing: .06em; text-transform: uppercase;
 }
 
-/* ---------- Tab bar ---------- */
-.tabbar {
-  position: fixed; z-index: 30; left: 0; right: 0; bottom: 0; height: var(--tab-h);
-  padding-bottom: env(safe-area-inset-bottom);
-  display: grid; grid-template-columns: 1fr 84px 1fr; align-items: center;
-  background: var(--paper); border-top: 1px solid var(--ink);
-}
-.tab { height: 100%; font-weight: 700; font-stretch: 75%; font-size: 15px; letter-spacing: .1em; text-transform: uppercase; color: var(--quiet); }
-.tab.active { color: var(--ink); text-decoration: underline; text-underline-offset: 6px; text-decoration-thickness: 2px; }
-/* Round shutter, like the iPhone camera: a filled disc inside a ring */
+/* ---------- Floating shutter: a filled disc inside a ring, like the iPhone camera ---------- */
 .shutter {
-  width: 58px; height: 58px; justify-self: center; border-radius: 50%; background: var(--red);
-  box-shadow: 0 0 0 4px var(--paper), 0 0 0 6.5px var(--red);
-  transition: transform .12s ease;
+  position: fixed; z-index: 40; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 28px);
+  width: 62px; height: 62px; border-radius: 50%; background: var(--red);
+  transform: translateX(-50%); transition: transform .12s ease;
 }
-.shutter:active { transform: scale(.9); }
+.shutter::before {
+  content: ''; position: absolute; inset: -9px; border-radius: 50%; border: 3px solid var(--red);
+}
+.shutter:active { transform: translateX(-50%) scale(.9); }
 .shutter.busy { animation: pulse 1s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .5; } }
 
 /* ---------- Album (full screen) ---------- */
 .sheet {
-  position: fixed; z-index: 20; left: 0; right: 0; top: 0; bottom: var(--tab-h);
+  position: fixed; z-index: 20; left: 0; right: 0; top: 0; bottom: 0;
   background: var(--paper);
   transform: translateY(102%); transition: transform .32s cubic-bezier(.2,.8,.2,1);
   overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
@@ -110,7 +109,7 @@ a { color: inherit; text-decoration: none; }
   padding: calc(env(safe-area-inset-top) + 6px) 10px 6px; background: var(--paper);
 }
 .sheet .close { width: 44px; height: 44px; font-size: 30px; line-height: 1; }
-.sheet-inner { max-width: 560px; margin: 0 auto; padding: 0 20px 48px; }
+.sheet-inner { max-width: 560px; margin: 0 auto; padding: 0 20px var(--zone); }
 
 /* Swipe between the found artwork and your own photo */
 .gallery { position: relative; }
@@ -127,8 +126,6 @@ a { color: inherit; text-decoration: none; }
 .dots i.on { background: var(--ink); }
 
 .meta { color: var(--quiet); margin-top: 6px; }
-.match { color: var(--ink); }
-.match.low { color: var(--red); }
 .artist { font-size: clamp(30px, 9vw, 44px); line-height: .95; font-weight: 800; font-stretch: 70%; text-transform: uppercase; letter-spacing: .01em; margin-top: 8px; }
 .title { font-size: clamp(22px, 6.5vw, 30px); line-height: 1.05; font-weight: 400; font-stretch: 75%; text-transform: uppercase; margin-top: 4px; }
 .status { margin-top: 22px; color: var(--quiet); }
@@ -141,7 +138,8 @@ a { color: inherit; text-decoration: none; }
 }
 .tracks .n { font-family: var(--mono); font-size: 12px; color: var(--quiet); }
 .tracks .t { font-size: 17px; line-height: 1.25; }
-.tracks .go { justify-self: end; color: var(--ink); display: flex; }
+.tracks .go { justify-self: end; color: var(--ink); display: flex; margin-right: 10px; }
+.lead .play { margin-right: 10px; }
 .tracks a:active, .tracks a.played, .tracks a.played .n, .tracks a.played .go { color: var(--red); }
 .sideRule { height: 14px; }
 .when { margin-top: 26px; color: var(--quiet); }
@@ -160,7 +158,10 @@ a { color: inherit; text-decoration: none; }
   background: var(--field); border: 1px solid var(--ink); border-radius: 0; -webkit-appearance: none; appearance: none;
 }
 .cands { list-style: none; margin-top: 12px; }
-.cands button { width: 100%; text-align: left; padding: 12px 0; border-bottom: 1px solid var(--rule); display: grid; gap: 2px; }
+.cands button { width: 100%; text-align: left; padding: 10px 0; border-bottom: 1px solid var(--rule); display: grid; grid-template-columns: 60px 1fr; gap: 12px; align-items: center; }
+.cthumb { width: 60px; height: 60px; background: var(--paper-2); overflow: hidden; }
+.cthumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ctext { display: grid; gap: 2px; min-width: 0; }
 .cands b { font-weight: 600; }
 .cands .mono { color: var(--quiet); }
 .removeRow { margin-top: 22px; }
@@ -183,11 +184,10 @@ a { color: inherit; text-decoration: none; }
 /* ---------- Crate ---------- */
 .crate {
   --s: min(70vw, 32vh, 360px);
-  position: absolute; left: 0; right: 0; top: var(--head-h); bottom: 108px;
+  position: absolute; left: 0; right: 0; top: var(--head-h); bottom: calc(108px + var(--zone));
   overflow-y: auto; overflow-x: hidden;
   scroll-snap-type: y mandatory; -webkit-overflow-scrolling: touch;
-  perspective: 1500px; perspective-origin: 50% 40%;
-  scrollbar-width: none;
+  transform-style: flat; scrollbar-width: none;
 }
 .crate::-webkit-scrollbar { display: none; }
 .sleeve {
@@ -207,8 +207,8 @@ a { color: inherit; text-decoration: none; }
 .typo b { font-size: calc(var(--s, 300px) * .12); display: block; }
 .typo span { font-weight: 400; font-size: calc(var(--s, 300px) * .08); margin-top: 6px; }
 .crate-info {
-  position: absolute; left: 0; right: 0; bottom: 0; height: 108px;
-  padding: 14px 20px; border-top: 1px solid var(--ink); background: var(--paper); text-align: center;
+  position: absolute; left: 0; right: 0; bottom: var(--zone); height: 108px;
+  padding: 14px 20px; border-top: 1px solid var(--ink); border-bottom: 1px solid var(--ink); background: var(--paper); text-align: center;
 }
 .crate-info .a { font-size: 24px; font-weight: 800; font-stretch: 70%; text-transform: uppercase; line-height: 1; }
 .crate-info .t { font-size: 18px; font-stretch: 75%; text-transform: uppercase; margin-top: 2px; }
@@ -217,7 +217,7 @@ a { color: inherit; text-decoration: none; }
 /* ---------- List ---------- */
 #listWrap { position: absolute; left: 0; right: 0; top: var(--head-h); bottom: 0; display: flex; flex-direction: column; }
 .searchbar { padding: 12px 20px; border-bottom: 1px solid var(--rule); }
-.list { list-style: none; overflow-y: auto; -webkit-overflow-scrolling: touch; flex: 1; }
+.list { list-style: none; overflow-y: auto; -webkit-overflow-scrolling: touch; flex: 1; padding-bottom: var(--zone); }
 .swipe {
   display: flex; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none;
   border-bottom: 1px solid var(--rule);
@@ -249,7 +249,7 @@ a { color: inherit; text-decoration: none; }
 @media (min-width: 768px) {
   .sheet { left: auto; width: min(520px, 50vw); border-left: 2px solid var(--ink); transform: translateX(102%); }
   .sheet.open { transform: translateX(0); }
-  .sheet-inner { padding: 0 32px 48px; }
+  .sheet-inner { padding: 0 32px var(--zone); }
   #collection.withSheet .colhead, #collection.withSheet #crateWrap > *, #collection.withSheet #listWrap, #collection.withSheet .empty { right: min(520px, 50vw); }
   .crate { --s: min(40vw, 44vh, 400px); }
   .frame { width: min(52vh, 440px); }

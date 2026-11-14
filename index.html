@@ -20,7 +20,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="/styles.css">
 </head>
-<body>
+<body data-view="scan">
 
 <!-- SCAN: opens straight into the camera -->
 <section id="scan" class="view active" aria-label="Scan">
@@ -29,6 +29,7 @@
   <header class="topbar">
     <img src="/favicon-32.png" alt="">
     <span class="wordmark">LISTEN HERE</span>
+    <button class="toCollection" data-go="collection">Collection</button>
   </header>
   <div class="frame" id="frame" aria-hidden="true">
     <i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i>
@@ -72,15 +73,11 @@
   </div>
 </section>
 
-<!-- ALBUM: full screen over everything but the tab bar -->
+<!-- ALBUM: full screen -->
 <aside id="sheet" class="sheet" aria-label="Album" aria-hidden="true"></aside>
 
-<!-- NAVIGATION -->
-<nav class="tabbar">
-  <button class="tab active" data-view="scan">Scan</button>
-  <button id="shutter" class="shutter" aria-label="Photograph cover or label"></button>
-  <button class="tab" data-view="collection">Collection</button>
-</nav>
+<!-- SHUTTER: floats at the bottom. On the camera it scans; anywhere else it brings you back to the camera -->
+<button id="shutter" class="shutter" aria-label="Photograph cover or label"></button>
 
 <script type="module" src="/app.js"></script>
 </body>

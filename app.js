@@ -79,36 +79,8 @@ document.addEventListener('error', ev => {
   else img.outerHTML = e ? typoCover(e) : '';
 }, true);
 
-/* =========================================================
-   Match percentage — how sure we are this is the right record.
-   Gemini's own confidence, adjusted by how closely the MusicBrainz
-   record matches what Gemini read, and by MusicBrainz's search score.
-   ========================================================= */
-const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/&/g, 'and').replace(/[^a-z0-9]/g, '');
-function similarity(a, b) {
-  a = norm(a); b = norm(b);
-  if (!a || !b) return 0;
-  if (a === b) return 1;
-  if (a.includes(b) || b.includes(a)) return 0.9;
-  const pairs = s => { const m = new Map(); for (let i = 0; i < s.length - 1; i++) { const p = s.slice(i, i + 2); m.set(p, (m.get(p) || 0) + 1); } return m; };
-  const A = pairs(a), B = pairs(b); let hit = 0;
-  for (const [p, n] of A) hit += Math.min(n, B.get(p) || 0);
-  return (2 * hit) / (a.length - 1 + b.length - 1);
-}
-function computeMatch(guess, release, mbScore) {
-  let g = Number(guess?.confidence ?? 0.7);
-  if (g > 1) g = g / 100;
-  g = Math.max(0, Math.min(1, g));
-  const sim = (similarity(guess?.artist, release.artist) + similarity(guess?.album, release.title)) / 2;
-  const s = Math.max(0, Math.min(1, (mbScore ?? 100) / 100));
-  return Math.max(1, Math.min(99, Math.round(100 * g * (0.4 + 0.6 * sim) * (0.75 + 0.25 * s))));
-}
-function matchText(e) {
-  if (e.matchBy === 'manual') return 'Chosen by you';
-  if (e.matchBy === 'barcode') return 'Barcode match';
-  if (typeof e.match === 'number') return `${e.match}% match`;
-  return '';
-}
+// Loose text form for searching: lower case, no accents or punctuation
+const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/&/g, 'and').replace(/[^a-z0-9]/g, '');
 
 /* =========================================================
    Views and navigation (no page changes: keeps the camera alive)
@@ -117,12 +89,12 @@ let view = 'scan';
 function showView(v) {
   view = v;
   document.querySelectorAll('.view').forEach(el => el.classList.toggle('active', el.id === v));
-  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === v));
+  document.body.dataset.view = v;
   closeSheet();
   if (v === 'collection') renderCollection();
   if (v === 'scan') ensureCamera();
 }
-document.querySelectorAll('.tab').forEach(t => t.onclick = () => showView(t.dataset.view));
+document.querySelectorAll('[data-go]').forEach(b => b.onclick = () => showView(b.dataset.go));
 
 /* =========================================================
    Camera
@@ -179,8 +151,9 @@ async function api(path, opts) {
   return j;
 }
 
+// The shutter is also the way back to the camera: from an album page or from the collection
 $('#shutter').onclick = async () => {
-  if (view !== 'scan') return showView('scan');
+  if (view !== 'scan' || sheetOpen()) return showView('scan');
   if (!cameraLive()) return startCamera();
   if (busy) return;
   busy = true;
@@ -232,7 +205,6 @@ async function findRelease(entry, params, by) {
   if (j.found) {
     entry.release = j.release; entry.status = 'done'; delete entry.error;
     entry.matchBy = by;
-    entry.match = by === 'photo' ? computeMatch(entry.guess, j.release, j.score) : null;
   } else entry.status = 'notfound';
   saveEntry(entry); refresh(entry);
 }
@@ -297,7 +269,7 @@ async function barcodeScan(code) {
     const { photo } = await capture();
     const j = await api('/api/release?barcode=' + encodeURIComponent(code));
     if (!j.found) { $('#hint').textContent = 'Barcode not found — photograph the cover or label'; await new Promise(r => setTimeout(r, 2500)); return; }
-    const entry = { id: newId(), scannedAt, source: 'barcode', barcode: code, status: 'done', photo, release: j.release, matchBy: 'barcode', match: null };
+    const entry = { id: newId(), scannedAt, source: 'barcode', barcode: code, status: 'done', photo, release: j.release, matchBy: 'barcode' };
     saveEntry(entry); openSheet(entry);
   } catch { /* silent: barcodes are a bonus */ }
   finally { busy = false; setBusy(false); }
@@ -328,8 +300,6 @@ function closeSheet() {
 function renderSheet(e) {
   const r = e.release, g = e.guess || {};
   const artist = displayArtist(e), title = displayTitle(e);
-  const mt = matchText(e);
-  const low = typeof e.match === 'number' && e.match < 60;
   const details = r ? [r.label, r.catno, r.year, r.format].filter(Boolean).join(' · ') : (g.record_label || '');
   let status = '';
   if (e.status === 'identifying') status = artist ? 'Finding the tracklist…' : 'Reading the record…';
@@ -359,7 +329,7 @@ function renderSheet(e) {
       <div class="slides">${slides.join('')}</div>
       <div class="dots">${slides.length > 1 ? slides.map((_, i) => `<i class="${i ? '' : 'on'}"></i>`).join('') : ''}</div>
     </div>
-    <p class="meta mono">${mt ? `<span class="match ${low ? 'low' : ''}">${esc(mt)}</span>${details ? ' · ' : ''}` : ''}${esc(details)}</p>
+    ${details ? `<p class="meta mono">${esc(details)}</p>` : ''}
     <h2 class="artist">${esc(artist || (e.status === 'identifying' ? '…' : 'Unknown'))}</h2>
     <h3 class="title">${esc(title)}</h3>
     ${status ? `<p class="status mono ${e.status === 'error' ? 'err' : ''}">${esc(status)}</p>` : ''}
@@ -420,10 +390,11 @@ sheet.addEventListener('submit', async ev => {
   try {
     const { candidates } = await api('/api/release?' + new URLSearchParams({ list: 1, album: title, artist }));
     list.innerHTML = candidates.length ? candidates.map(c => `<li><button data-pick="${esc(c.id)}">
-        <b>${esc(c.title)}</b><span>${esc(c.artist)}</span>
-        <span class="mono">${esc([c.year, c.format, c.country, c.label, c.catno].filter(Boolean).join(' · '))}</span>
+        <span class="cthumb"><img src="${esc(c.thumb)}" alt="" loading="lazy" onerror="this.remove()"></span>
+        <span class="ctext"><b>${esc(c.title)}</b><span>${esc(c.artist)}</span>
+        <span class="mono">${esc([c.year, c.format, c.country, c.label, c.catno].filter(Boolean).join(' · '))}</span></span>
       </button></li>`).join('')
-      : '<li class="mono quiet" style="padding:12px 0">No releases found. Try fewer words, or check the spelling.</li>';
+      : '<li class="mono quiet" style="padding:12px 0">No vinyl releases found. Try fewer words, or check the spelling.</li>';
   } catch (err) {
     list.innerHTML = `<li class="mono" style="padding:12px 0;color:var(--red)">${esc(err.message)}</li>`;
   }
@@ -492,30 +463,38 @@ function layoutCrate() {
   bottom.style.height = pad + s * 0.66 + 'px';
   metrics = { s, step };
 }
-// Depth is strictly physical: records further down the list are nearer to you.
-// Records above the middle lean back and get smaller, so they only ever show above the front one.
-// Records below the middle fall forward and drop down, clear of the front one's face.
+// How the crate stays clean on iPhone:
+// Safari sorts 3D-tilted siblings by their real depth and ignores stacking order when
+// they share a perspective, so a record leaning back from an edge that touches the
+// front record's face can poke through it. So: (1) each record carries its own
+// perspective(), so Safari flattens them one by one; and (2) records above the middle
+// are pushed physically back, a full record-depth per step, so every point of each one is
+// genuinely behind the record in front. Depth order and stacking order then always agree.
+const P = 1500;          // perspective distance, px
+const MAX_LEAN = 64;     // degrees, furthest-back records
 function updateCrate() {
   ticking = false;
   if (!sleeves.length) return;
   const { s, step } = metrics;
+  const depth = s * Math.sin(MAX_LEAN * Math.PI / 180) + 12; // > any record's own depth when tilted
   const pos = crate.scrollTop / step;
   sleeves.forEach((el, i) => {
     const d = i - pos, a = Math.abs(d);
-    if (d < -6 || d > 4) { el.style.visibility = 'hidden'; return; }
+    if (d < -5 || d > 3) { el.style.visibility = 'hidden'; return; }
     el.style.visibility = '';
     const k = Math.min(a, 1);
     let transform;
     if (d <= 0) {
-      const angle = 48 * k + 4 * Math.min(a - k, 4);
-      const scale = 1 - 0.07 * k - 0.03 * Math.min(a - k, 4);
-      transform = `rotateX(${angle}deg) scale(${scale})`;
+      // Above the middle (newer): pushed back, leaning back
+      const angle = Math.min(MAX_LEAN, 48 * k + 4 * (a - k));
+      transform = `perspective(${P}px) translateZ(${-depth * a}px) rotateX(${angle}deg)`;
     } else {
-      transform = `translateY(${s * 0.22 * k}px) rotateX(${-70 * k}deg)`;
+      // Below the middle (older): falling forward, dropped clear of the front record's face
+      transform = `perspective(${P}px) translateY(${s * 0.22 * k}px) translateZ(${k}px) rotateX(${-70 * k}deg)`;
     }
     el.style.transform = transform;
     el.style.zIndex = String(i + 1);
-    el.style.filter = d < -0.3 ? `brightness(${1 - Math.min(a, 4) * 0.07})` : '';
+    el.style.filter = d < -0.3 ? `brightness(${1 - Math.min(a, 4) * 0.06})` : '';
   });
   const i = Math.max(0, Math.min(sleeves.length - 1, Math.round(pos)));
   if (i !== focusIndex) { focusIndex = i; renderInfo(entries[i]); }
@@ -533,7 +512,7 @@ function renderInfo(e) {
   if (!e) return;
   $('#crateInfo').innerHTML = `<div class="a">${esc(displayArtist(e) || '…')}</div>
     <div class="t">${esc(displayTitle(e))}</div>
-    <div class="w mono">${esc([matchText(e), e.sample ? 'Sample record' : when(e.scannedAt)].filter(Boolean).join(' · '))}</div>`;
+    <div class="w mono">${esc(e.sample ? 'Sample record' : when(e.scannedAt))}</div>`;
 }
 $('#crateInfo').onclick = () => entries[focusIndex] && openSheet(entries[focusIndex]);
 
@@ -548,7 +527,7 @@ function renderList() {
   });
   listEl.innerHTML = shown.map(e => {
     const r = e.release || {};
-    const meta = [r.year, r.label, matchText(e)].filter(Boolean).join(' · ');
+    const meta = [r.year, r.label, r.format].filter(Boolean).join(' · ');
     return `<li><div class="swipe">
       <button class="rowmain" data-open="${esc(e.id)}">
         <span class="cover">${coverImg(e, r.artwork || photoUrl(e))}</span>
