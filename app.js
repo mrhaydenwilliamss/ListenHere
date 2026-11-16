@@ -338,10 +338,12 @@ async function barcodeScan(code) {
    Album page
    ========================================================= */
 let current = null;
+let lastViewedId = null; // the record to keep in view in the crate and list
 const sheet = $('#sheet');
 const sheetOpen = () => sheet.classList.contains('open');
 function openSheet(entry) {
   current = entry;
+  lastViewedId = entry.id; // so the crate and list come back to this record
   renderSheet(entry);
   sheet.scrollTop = 0;
   sheet.classList.add('open');
@@ -378,7 +380,7 @@ function renderSheet(e) {
     const side = String(t.n).replace(/\d+/g, '');
     const gap = lastSide && side !== lastSide ? '<li class="sideRule" aria-hidden="true"></li>' : '';
     lastSide = side;
-    return `${gap}<li><a href="${youtubeUrl(r.artist, t.title, r.title)}" data-track>
+    return `${gap}<li><a href="${youtubeUrl(r.artist, t.title, r.title)}" target="_blank" rel="noopener" data-track>
       <span class="n">${esc(t.n)}</span><span class="t">${esc(t.title)}</span><span class="go">${PLAY}</span></a></li>`;
   }).join('');
 
@@ -393,7 +395,7 @@ function renderSheet(e) {
     <h3 class="title">${esc(title)}</h3>
     ${status ? `<p class="status mono ${e.status === 'error' ? 'err' : ''}">${esc(status)}</p>` : ''}
     ${e.status === 'error' ? '<button class="btn" data-act="retry" style="margin-top:12px">Try again</button>' : ''}
-    ${e.status === 'notfound' && artist ? `<a class="btn album-yt" href="${youtubeUrl(artist, title, '')}">${PLAY} Search YouTube for the album</a>` : ''}
+    ${e.status === 'notfound' && artist ? `<a class="btn album-yt" href="${youtubeUrl(artist, title, '')}" target="_blank" rel="noopener">${PLAY} Search YouTube for the album</a>` : ''}
     ${tracks.length ? `<p class="lead mono"><span>Tap a track to hear it on YouTube</span>${PLAY}</p><ol class="tracks">${rows}</ol>` : ''}
     <p class="when mono">${e.sample ? 'Sample record · ' : 'Scanned '}${esc(when(e.scannedAt))}</p>
 
@@ -497,7 +499,7 @@ async function renderCollection() {
   $('#crateWrap').hidden = empty || mode !== 'crate';
   $('#listWrap').hidden = empty || mode !== 'list';
   if (empty) return;
-  if (mode === 'crate') renderCrate(); else renderList();
+  if (mode === 'crate') renderCrate(); else renderList(true);
 }
 
 /* ---------- The crate: vertical Cover Flow with its own scroll physics ----------
@@ -530,16 +532,18 @@ function renderCrate() {
   shades = sleeves.map(el => el.querySelector('.shade'));
   stopAnim();
   pos = 0; focusIndex = -1;
-  layoutCrate();
+  const i = entries.findIndex(e => e.id === lastViewedId);
+  layoutCrate(i >= 0 ? i : 0); // come back to the record last viewed
 }
-function layoutCrate() {
+function layoutCrate(startAt) {
   if (!sleeves.length) return;
   const H = crate.clientHeight, s = sleeves[0].offsetWidth, step = s * 0.34;
   const top = H / 2 - s / 2;
   sleeves.forEach(el => el.style.top = top + 'px');
-  const keep = focusIndex >= 0 ? focusIndex : 0;
+  const keep = startAt ?? (focusIndex >= 0 ? focusIndex : 0);
   metrics = { s, step, H, max: (sleeves.length - 1) * step };
   pos = keep * step;
+  focusIndex = -1; // forces the caption under the crate to refresh
   draw();
 }
 addEventListener('resize', () => { if (sleeves.length && !crate.closest('[hidden]')) layoutCrate(); });
@@ -569,7 +573,7 @@ function draw() {
     }
   }
   const f = Math.max(0, Math.min(sleeves.length - 1, Math.round(at)));
-  if (f !== focusIndex) { focusIndex = f; renderInfo(entries[f]); }
+  if (f !== focusIndex) { focusIndex = f; lastViewedId = entries[f]?.id ?? lastViewedId; renderInfo(entries[f]); }
 }
 
 // iOS rubber band: past an edge, movement is resisted more the further you pull
@@ -754,7 +758,7 @@ function sortEntries(list) {
     : az(sortValue(a), sortValue(b)) || az(sortText(displayTitle(a)), sortText(displayTitle(b))));
 }
 
-function renderList() {
+function renderList(restore = false) {
   const words = norm(q.value) ? q.value.toLowerCase().split(/\s+/).filter(Boolean) : [];
   const shown = entries.filter(e => {
     if (!words.length) return true;
@@ -777,6 +781,10 @@ function renderList() {
     </div></li>`;
   }).join('');
   $('#noResults').hidden = shown.length > 0;
+  if (restore && lastViewedId) {
+    const li = listEl.querySelector(`[data-open="${CSS.escape(lastViewedId)}"]`)?.closest('li');
+    if (li) listEl.scrollTop = Math.max(0, li.offsetTop - (listEl.clientHeight - li.offsetHeight) / 2);
+  }
 
   // A–Z index, only when sorted alphabetically and there's enough to scroll
   const showIndex = alpha && shown.length > 8;
