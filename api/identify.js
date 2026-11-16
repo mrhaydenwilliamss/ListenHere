@@ -8,7 +8,8 @@ const MODELS = [process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite', 'gemini-2.5
 
 const PROMPT = `This photo shows a vinyl record: either its front cover, or the round paper label in the middle of the disc.
 Identify the release. Read any printed text carefully (artist, title, record label name, catalogue number, side).
-Only report what you can see or are confident about. Leave a field empty if unsure.
+Copy the artist and title exactly as printed. Only report what you can see or are confident about. Leave a field empty if unsure.
+Set is_compilation to true only if it is clearly a compilation, soundtrack or various-artists release.
 If the photo is not a record, set kind to "unknown".`;
 
 const SCHEMA = {
@@ -19,6 +20,7 @@ const SCHEMA = {
     album: { type: 'STRING' },
     record_label: { type: 'STRING' },
     catalogue_number: { type: 'STRING' },
+    is_compilation: { type: 'BOOLEAN' },
     confidence: { type: 'NUMBER' }
   },
   required: ['kind', 'artist', 'album', 'confidence']
