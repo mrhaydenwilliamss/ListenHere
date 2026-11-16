@@ -37,6 +37,18 @@
     <div class="ring"></div>
   </div>
   <button id="startCam" class="startcam" hidden>Tap to start camera</button>
+  <!-- Search by text, over the live camera -->
+  <div class="searchPanel" id="searchPanel" hidden>
+    <div class="spCard" role="dialog" aria-label="Search by title and artist">
+      <button class="spClose" data-sp="close" aria-label="Close">×</button>
+      <form id="spForm">
+        <input name="title" placeholder="Title" autocomplete="off" enterkeyhint="next">
+        <input name="artist" placeholder="Artist" autocomplete="off" enterkeyhint="search">
+        <button class="btn solid" type="submit">Search</button>
+      </form>
+      <ul class="cands" id="spResults"></ul>
+    </div>
+  </div>
   <p class="hint mono" id="hint">Fill the frame with a cover or label</p>
 </section>
 
@@ -89,6 +101,20 @@
 
 <!-- SHUTTER: floats at the bottom. On the camera it scans; anywhere else it brings you back to the camera -->
 <button id="shutter" class="shutter" aria-label="Photograph cover or label"></button>
+
+<!-- Either side of the shutter, on the camera only: search by text (left), upload a photo (right) -->
+<button id="btnSearch" class="sidebtn left" aria-label="Search by title and artist">
+  <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="13.5" cy="13.5" r="8" fill="none" stroke="currentColor" stroke-width="2.6"/><path d="M19.6 19.6l7.4 7.4" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/></svg>
+</button>
+<button id="btnUpload" class="sidebtn right" aria-label="Upload a photo">
+  <svg viewBox="0 0 32 32" aria-hidden="true">
+    <path d="M18 5.5H6.5a1 1 0 0 0-1 1v19a1 1 0 0 0 1 1h19a1 1 0 0 0 1-1V15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="11.5" cy="12" r="2.4" fill="currentColor"/>
+    <path d="M6.5 23.5c3-3.2 5.4-5.2 8-5.2s4.2 2.2 6.6 2.2 3.6-1.2 5.4-2.6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M25 13.5V3.8M21 7.5l4-4 4 4" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+</button>
+<input id="fileInput" type="file" accept="image/*" hidden>
 
 <script type="module" src="/app.js"></script>
 </body>

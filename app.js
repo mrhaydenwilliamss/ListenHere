@@ -100,6 +100,7 @@ const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[\u030
    ========================================================= */
 let view = 'scan';
 function showView(v) {
+  if (searching()) closeSearch();
   view = v;
   document.querySelectorAll('.view').forEach(el => el.classList.toggle('active', el.id === v));
   document.body.dataset.view = v;
@@ -221,6 +222,7 @@ async function api(path, opts) {
 
 // The shutter is also the way back to the camera: from an album page or from the collection
 $('#shutter').onclick = async () => {
+  if (searching()) return closeSearch();
   if (view !== 'scan' || sheetOpen()) return showView('scan');
   if (!cameraLive()) return startCamera();
   if (busy) return;
@@ -251,6 +253,104 @@ $('#shutter').onclick = async () => {
     busy = false; setBusy(false);
   }
 };
+
+/* =========================================================
+   Search by text, over the live camera (left of the shutter)
+   ========================================================= */
+const panel = $('#searchPanel'), spForm = $('#spForm'), spResults = $('#spResults');
+const searching = () => !panel.hidden;
+function openSearch() {
+  panel.hidden = false;
+  document.body.classList.add('searching');
+  spResults.innerHTML = '';
+  setTimeout(() => spForm.elements.title.focus(), 50);
+}
+function closeSearch() {
+  panel.hidden = true;
+  document.body.classList.remove('searching');
+  document.activeElement?.blur();
+}
+$('#btnSearch').onclick = openSearch;
+panel.addEventListener('click', ev => {
+  if (ev.target === panel || ev.target.closest('[data-sp="close"]')) return closeSearch(); // tap outside or ×
+  const pick = ev.target.closest('[data-sp-pick]');
+  if (pick) addFromSearch(pick.dataset.spPick);
+});
+spForm.elements.title.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); spForm.elements.artist.focus(); } });
+spForm.addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const title = spForm.elements.title.value.trim(), artist = spForm.elements.artist.value.trim();
+  if (!title && !artist) { spResults.innerHTML = '<li class="mono quiet" style="padding:12px 0">Type a title or an artist</li>'; return; }
+  document.activeElement?.blur();
+  spResults.innerHTML = '<li class="mono quiet" style="padding:12px 0">Searching…</li>';
+  try {
+    const { candidates } = await api('/api/release?' + new URLSearchParams({ list: 1, album: title, artist }));
+    spResults.innerHTML = candidates.length ? candidates.map(c => `<li><button data-sp-pick="${esc(c.id)}">
+        <span class="cthumb"><img src="${esc(c.thumb)}" alt="" loading="lazy" onerror="this.remove()"></span>
+        <span class="ctext"><b>${esc(c.title)}</b><span>${esc(c.artist)}</span>
+        <span class="mono">${esc([c.year, c.format, c.country, c.label, c.catno].filter(Boolean).join(' · '))}</span></span>
+      </button></li>`).join('')
+      : '<li class="mono quiet" style="padding:12px 0">No vinyl releases found. Try fewer words, or check the spelling.</li>';
+  } catch (err) {
+    spResults.innerHTML = `<li class="mono" style="padding:12px 0;color:#ff8a70">${esc(err.message)}</li>`;
+  }
+});
+// Picking a result adds it to the collection like a scan (its picture is the found cover)
+async function addFromSearch(id) {
+  spResults.innerHTML = '<li class="mono quiet" style="padding:12px 0">Loading tracklist…</li>';
+  try {
+    const j = await api('/api/release?' + new URLSearchParams({ id }));
+    if (!j.found) throw new Error('Couldn’t load that release');
+    const entry = { id: newId(), scannedAt: new Date().toISOString(), source: 'search', status: 'done', release: j.release, matchBy: 'manual' };
+    await saveEntry(entry);
+    closeSearch();
+    openSheet(entry);
+  } catch (err) {
+    spResults.innerHTML = `<li class="mono" style="padding:12px 0;color:#ff8a70">${esc(err.message)}</li>`;
+  }
+}
+
+/* =========================================================
+   Upload a photo (right of the shutter): identified exactly like a shutter photo
+   ========================================================= */
+const fileInput = $('#fileInput');
+$('#btnUpload').onclick = () => { if (!busy) fileInput.click(); };
+fileInput.addEventListener('change', async () => {
+  const file = fileInput.files?.[0];
+  fileInput.value = '';                 // so the same photo can be chosen again later
+  if (!file || busy) return;
+  busy = true;
+  const scannedAt = new Date().toISOString();
+  setBusy(true, 'Reading…');
+  try {
+    const { photo, small } = await shrinkFile(file);
+    const entry = { id: newId(), scannedAt, source: 'photo', status: 'identifying', photo };
+    saveEntry(entry);
+    openSheet(entry);
+    await identify(entry, await blobToBase64(small));
+  } catch {
+    $('#hint').textContent = 'Couldn’t open that photo';
+    await new Promise(r => setTimeout(r, 2000));
+  } finally { busy = false; setBusy(false); }
+});
+// Keep the whole picture (no crop): longest side 1200 px to keep, 768 px for Gemini
+async function shrinkFile(file) {
+  let img;
+  try { img = await createImageBitmap(file); }
+  catch {
+    img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = URL.createObjectURL(file); });
+  }
+  const w = img.width, h = img.height;
+  const make = (max, q) => new Promise(res => {
+    const k = Math.min(1, max / Math.max(w, h));
+    const c = document.createElement('canvas');
+    c.width = Math.round(w * k); c.height = Math.round(h * k);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    c.toBlob(res, 'image/jpeg', q);
+  });
+  const [photo, small] = await Promise.all([make(1200, 0.88), make(768, 0.8)]);
+  return { photo, small };
+}
 
 function setBusy(on, text) {
   $('#shutter').classList.toggle('busy', on);
@@ -370,7 +470,7 @@ async function startBarcodes() {
 }
 async function barcodeLoop() {
   setTimeout(barcodeLoop, 200);
-  if (view !== 'scan' || busy || sheetOpen() || video.readyState < 2) return;
+  if (view !== 'scan' || busy || sheetOpen() || searching() || video.readyState < 2) return;
   try {
     const codes = await detector.detect(video);
     const code = codes[0]?.rawValue;
@@ -409,12 +509,14 @@ function openSheet(entry) {
   renderSheet(entry);
   sheet.scrollTop = 0;
   sheet.classList.add('open');
+  document.body.classList.add('sheetOpen');
   sheet.setAttribute('aria-hidden', 'false');
   $('#collection').classList.add('withSheet');
 }
 function closeSheet() {
   current = null;
   sheet.classList.remove('open');
+  document.body.classList.remove('sheetOpen');
   sheet.setAttribute('aria-hidden', 'true');
   $('#collection').classList.remove('withSheet');
   if (view === 'scan' && video.paused) resumePreview(); // unfreeze the preview
