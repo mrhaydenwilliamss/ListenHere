@@ -5,8 +5,7 @@
 //   ?artist=Chic&album=C'est Chic&catno=SD 19209     best single match
 //   ?id=<MusicBrainz release id>                      a specific release
 //   ?list=1&artist=Chic&album=C'est Chic              several candidates to choose from (text search)
-//   ?verify=1&artist=..&album=..&catno=..&label=..     from a photo: the release only if what was read
-//                                                      and what was found agree; otherwise up to 3 choices
+//   ?verify=1&artist=..&album=..&catno=..&label=..     from a photo: the best-scoring match, found fast
 
 const MB = 'https://musicbrainz.org/ws/2';
 const UA = 'ListenHere/1.1 ( https://listenhere-dun.vercel.app )'; // MusicBrainz asks every app to identify itself
@@ -83,43 +82,24 @@ function scoreCandidate(guess, r) {
 // Confident only when the artist AND title agree, or the catalogue number matches and one of them agrees
 const isConfident = m => (m.artistSim >= 0.8 && m.titleSim >= 0.88) || (m.catMatch && (m.artistSim >= 0.6 || m.titleSim >= 0.6));
 
-async function verifiedMatch(guess, unsure = false) {
+// Best match for what was read from a photo, fast:
+// the catalogue-number search and the exact title + artist search run side by side;
+// the slower, looser searches only run if those find nothing usable.
+// The best-scoring release is always returned straight away: the user confirms or rejects it.
+async function bestMatch(guess) {
   const pool = new Map();
-  const queries = [];
-  const a = clean(guess.artist), t = clean(guess.album), c = clean(guess.catalogue_number);
-  if (c) queries.push(`catno:"${c}"`);
-  queries.push(...textQueries(guess.artist, guess.album));
-  for (const q of queries) {
-    const j = await mb(`/release?query=${encodeURIComponent(q)}&fmt=json&limit=25`);
-    for (const r of j.releases || []) if (!pool.has(r.id)) pool.set(r.id, { r, m: scoreCandidate(guess, r) });
-    const best = [...pool.values()].sort((x, y) => y.m.s - x.m.s)[0];
-    if (best && isConfident(best.m) && best.m.s > 0.9) break; // strong enough: no need for more searches
+  const add = j => { for (const r of j.releases || []) if (!pool.has(r.id)) pool.set(r.id, { r, m: scoreCandidate(guess, r) }); };
+  const c = clean(guess.catalogue_number);
+  const [exact, ...looser] = textQueries(guess.artist, guess.album);
+  const first = [c && `catno:"${c}"`, exact].filter(Boolean);
+  (await Promise.all(first.map(q => mb(`/release?query=${encodeURIComponent(q)}&fmt=json&limit=25`).catch(() => ({}))))).forEach(add);
+  const top = () => [...pool.values()].sort((x, y) => y.m.s - x.m.s)[0];
+  for (const q of looser) {
+    if (top() && top().m.s >= 0.6) break;
+    add(await mb(`/release?query=${encodeURIComponent(q)}&fmt=json&limit=25`));
   }
-  const ranked = [...pool.values()].sort((x, y) => y.m.s - x.m.s);
-  const best = ranked[0];
-  if (best && isConfident(best.m) && !unsure) { // a reading Gemini itself doubted is never answered outright
-    // A different album scoring almost as well means it's genuinely ambiguous: ask instead
-    const rival = ranked.find(x => x.m.group !== best.m.group);
-    if (!rival || best.m.s - rival.m.s > 0.08 || !isConfident(rival.m)) return { confident: true, id: best.r.id };
-  }
-  // Not sure: up to 3 different albums (one pressing each, vinyl preferred) for the user to choose from
-  const choices = [], groups = new Set();
-  for (const x of ranked) {
-    if (x.m.s < 0.35 || groups.has(x.m.group)) continue;
-    const sameGroup = ranked.filter(y => y.m.group === x.m.group);
-    const pick = sameGroup.find(y => isVinyl(y.r)) || x;
-    groups.add(x.m.group);
-    const label = (pick.r['label-info'] || [])[0] || {};
-    choices.push({
-      id: pick.r.id, title: pick.r.title, artist: artistOf(pick.r), year: (pick.r.date || '').slice(0, 4),
-      format: [...new Set((pick.r.media || []).map(m => m.format).filter(Boolean))].join(', '),
-      label: label.label?.name || '', catno: label['catalog-number'] || '',
-      thumb: `https://coverartarchive.org/release-group/${x.m.group}/front-250`,
-      thumbAlt: `https://coverartarchive.org/release/${pick.r.id}/front-250`
-    });
-    if (choices.length === 3) break;
-  }
-  return { confident: false, choices };
+  const best = top();
+  return best && best.m.s >= 0.35 ? { id: best.r.id, confident: isConfident(best.m) } : null;
 }
 
 // Vinyl only: CD, cassette and digital releases are left out
@@ -147,13 +127,13 @@ async function candidates(artist, album) {
 }
 
 module.exports = async (req, res) => {
-  const { barcode, artist, album, catno, id, list, verify, label: recordLabel, compilation, unsure } = req.query;
+  const { barcode, artist, album, catno, id, list, verify, label: recordLabel, compilation } = req.query;
   try {
     if (verify && !id) {
       if (!artist && !album) return res.status(400).json({ error: 'Nothing to search for' });
-      const v = await verifiedMatch({ artist, album, catalogue_number: catno, record_label: recordLabel, is_compilation: compilation === '1' }, unsure === '1');
-      if (!v.confident) return res.json({ found: false, choices: v.choices });
-      req.query.id = v.id; // carry on below with the confident match
+      const best = await bestMatch({ artist, album, catalogue_number: catno, record_label: recordLabel, is_compilation: compilation === '1' });
+      if (!best) return res.json({ found: false });
+      req.query.id = best.id; // carry on below with the best match
     }
     if (list) {
       if (!artist && !album) return res.status(400).json({ error: 'Type a title or an artist' });

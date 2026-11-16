@@ -19,14 +19,19 @@ async function gemini(parts, schema) {
   let lastError = '';
   for (const model of order) {
     try {
-      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+      // Thinking turned right down: reading a record needs a quick look, not deliberation
+      const thinking = /^gemini-2\.5/.test(model) ? { thinkingBudget: 0 } : { thinkingLevel: 'minimal' };
+      const send = withThinking => fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-goog-api-key': process.env.GEMINI_API_KEY },
         body: JSON.stringify({
           contents: [{ parts }],
-          generationConfig: { responseMimeType: 'application/json', responseSchema: schema, temperature: 0 }
+          generationConfig: { responseMimeType: 'application/json', responseSchema: schema, temperature: 0,
+            ...(withThinking ? { thinkingConfig: thinking } : {}) }
         })
       });
+      let r = await send(true);
+      if (r.status === 400) r = await send(false); // this model doesn't take that setting: ask plainly
       if (r.status === 404 || r.status === 400) { lastError = `${model}: ${r.status}`; if (working === model) working = null; continue; }
       if (r.status === 429) { lastError = `${model}: busy (free-tier limit)`; continue; } // try another model's quota
       if (!r.ok) { lastError = `${model}: ${r.status}`; continue; }
