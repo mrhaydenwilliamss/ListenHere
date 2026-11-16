@@ -357,6 +357,7 @@ const sheetOpen = () => sheet.classList.contains('open');
 function openSheet(entry) {
   current = entry;
   lastViewedId = entry.id; // so the crate and list come back to this record
+  wantArt(entry);
   renderSheet(entry);
   sheet.scrollTop = 0;
   sheet.classList.add('open');
@@ -573,6 +574,7 @@ function layoutCrate(startAt) {
   pos = keep * step;
   focusIndex = -1; // forces the caption under the crate to refresh
   draw();
+  crateAtRest();
 }
 addEventListener('resize', () => { if (sleeves.length && !crate.closest('[hidden]')) layoutCrate(); });
 
@@ -620,6 +622,14 @@ function unband(p) { // inverse of banded, so a new drag starts exactly where th
 
 /* ---- animation: momentum decay that lands on a record, or a spring ---- */
 function stopAnim() { cancelAnimationFrame(animFrame); anim = null; }
+// Once the crate stops, the records you can see (behind and in front of the centre) get their check
+function crateAtRest() {
+  if (!sleeves.length || mode !== 'crate' || view !== 'collection') return;
+  onScreen.clear();
+  for (let i = Math.max(0, focusIndex - 4); i <= Math.min(entries.length - 1, focusIndex + 2); i++) onScreen.add(entries[i].id);
+  for (let i = Math.min(entries.length - 1, focusIndex + 2); i >= Math.max(0, focusIndex - 4); i--) if (i !== focusIndex) wantArt(entries[i]);
+  wantArt(entries[focusIndex]); // the centre record goes first
+}
 function run(a) {
   stopAnim();
   anim = { ...a, t0: performance.now(), x0: pos };
@@ -635,7 +645,7 @@ function run(a) {
       if (t > 60 && Math.abs(x - anim.target) < 0.3) { x = anim.target; done = true; }
     }
     pos = x; draw();
-    if (done) anim = null; else animFrame = requestAnimationFrame(frame);
+    if (done) { anim = null; crateAtRest(); } else animFrame = requestAnimationFrame(frame);
   };
   animFrame = requestAnimationFrame(frame);
 }
@@ -793,6 +803,7 @@ function renderList(restore = false) {
     return;
   }
   listSig = sig;
+  listSeen.disconnect();
   const words = norm(q.value) ? q.value.toLowerCase().split(/\s+/).filter(Boolean) : [];
   const shown = entries.filter(e => {
     if (!words.length) return true;
@@ -815,6 +826,7 @@ function renderList(restore = false) {
     </div></li>`;
   }).join('');
   $('#noResults').hidden = shown.length > 0;
+  listEl.querySelectorAll('li').forEach(li => listSeen.observe(li));
   if (restore) centreListOn(lastViewedId);
 
   // A–Z index, only when sorted alphabetically and there's enough to scroll
@@ -826,6 +838,16 @@ function renderList(restore = false) {
     az.innerHTML = LETTERS.map(l => `<span data-l="${l}" class="${present.has(l) ? '' : 'off'}">${l}</span>`).join('');
   }
 }
+
+// Rows report when they're on screen, so only records you can see get an artwork check
+const listSeen = new IntersectionObserver(items => {
+  for (const it of items) {
+    const id = it.target.querySelector('[data-open]')?.dataset.open;
+    if (!id) continue;
+    if (it.isIntersecting) { onScreen.add(id); wantArt(entryById.get(id)); }
+    else onScreen.delete(id);
+  }
+}, { root: listEl });
 
 function centreListOn(id) {
   if (!id) return;
@@ -883,30 +905,58 @@ listEl.addEventListener('click', async ev => {
 
 /* =========================================================
    Artwork check for records saved before album-level artwork existed.
-   Quietly, one at a time, at most once per record.
+   On demand only: a record is checked when it's opened, or when it's on screen in the
+   crate (once the crate is at rest) or the list. One check a second at most, newest
+   request first, and a record that has left the screen by its turn is skipped (it will be
+   checked when next seen). Each record is checked once, ever.
    ========================================================= */
-let artChecking = false;
-async function backfillArtwork() {
-  if (artChecking || !navigator.onLine) return;
-  artChecking = true;
-  let changed = false;
-  try {
-    for (const e of await allEntries()) {
-      const r = e.release;
-      if (!r?.id || e.artChecked || (r.artwork && 'artworkAlt' in r)) continue;
-      try {
-        const j = await api('/api/release?' + new URLSearchParams({ id: r.id }));
-        if (j.found) {
-          if (r.artwork !== j.release.artwork) changed = true;
-          r.artwork = j.release.artwork; r.artworkAlt = j.release.artworkAlt;
-        }
-        e.artChecked = true;
-        await saveEntry(e);
-      } catch { /* try again another time */ }
-      await new Promise(res => setTimeout(res, 1100)); // be polite to MusicBrainz
-    }
-  } finally { artChecking = false; }
-  if (changed && view === 'collection' && !sheetOpen()) renderCollection();
+const artQueue = [];          // record ids, newest request last
+const onScreen = new Set();   // ids currently visible in the crate or list
+let artBusy = false;
+const artDone = new Set(); // checked (or being checked) this session, whatever object holds the record
+const needsArt = e => !!e?.release?.id && !e.artChecked && !artDone.has(e.id) && !(e.release.artwork && 'artworkAlt' in e.release);
+function wantArt(e) {
+  if (!needsArt(e)) return;
+  const i = artQueue.indexOf(e.id);
+  if (i >= 0) artQueue.splice(i, 1);
+  artQueue.push(e.id);
+  if (!artBusy) checkNextArt();
+}
+async function checkNextArt() {
+  artBusy = true;
+  while (artQueue.length) {
+    const id = artQueue.pop();                                   // most recent request first
+    if (id !== current?.id && !onScreen.has(id)) continue;       // no longer visible: leave for later
+    const e = entryById.get(id) || (current?.id === id ? current : null);
+    if (!needsArt(e) || !navigator.onLine) continue;
+    artDone.add(id);
+    try {
+      const j = await api('/api/release?' + new URLSearchParams({ id: e.release.id }));
+      // the collection may have reloaded meanwhile: update whichever copy is current
+      for (const x of new Set([e, entryById.get(id), current?.id === id ? current : null])) {
+        if (!x?.release) continue;
+        if (j.found) { x.release.artwork = j.release.artwork; x.release.artworkAlt = j.release.artworkAlt; }
+        x.artChecked = true;
+      }
+      const latest = entryById.get(id) || e;
+      await saveEntry(latest);
+      showNewArt(latest);
+    } catch { artDone.delete(id); /* tried again next time it's seen */ }
+    await new Promise(res => setTimeout(res, 1100)); // be polite to MusicBrainz
+  }
+  artBusy = false;
+}
+// Put a newly found cover in place, without rebuilding the crate or list
+function showNewArt(e) {
+  const src = e.release.artwork || photoUrl(e);
+  const i = entries.findIndex(x => x.id === e.id);
+  if (i >= 0 && sleeves[i]) sleeves[i].innerHTML = coverImg(e, src) + '<i class="shade"></i>', shades[i] = sleeves[i].querySelector('.shade');
+  const cell = listEl.querySelector(`[data-open="${CSS.escape(e.id)}"] .cover`);
+  if (cell) cell.innerHTML = coverImg(e, src);
+  if (current?.id === e.id) renderSheet(e);
+  // the crate and list now match the saved data, so they don't need rebuilding later
+  if (crateSig) crateSig = signature(entries);
+  if (listSig) listSig = signature(entries) + '?' + q.value;
 }
 
 /* =========================================================
@@ -945,4 +995,3 @@ $('#clearSamples').onclick = async () => {
    ========================================================= */
 startCamera();
 retryUnfinished();
-setTimeout(backfillArtwork, 4000); // after start-up, so it never competes with scanning
