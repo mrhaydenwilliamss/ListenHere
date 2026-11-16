@@ -68,12 +68,25 @@ function typoCover(e) {
 }
 // An <img> that falls back to the user's photo, then to a typographic cover
 function coverImg(e, src) {
-  return src ? `<img src="${esc(src)}" alt="" loading="lazy" data-cover="${esc(e.id)}">` : typoCover(e);
+  const alt = e.release?.artworkAlt || '';
+  return src ? `<img src="${esc(src)}" alt="" loading="lazy" data-cover="${esc(e.id)}"${alt ? ` data-alt="${esc(alt)}"` : ''}>` : typoCover(e);
 }
+// When artwork fails to load: retry once (the Cover Art Archive is sometimes briefly
+// unavailable), then the album's other artwork, then your photo, then a lettered cover.
 document.addEventListener('error', ev => {
   const img = ev.target;
   if (!(img instanceof HTMLImageElement) || !img.dataset.cover) return;
   const e = entryById.get(img.dataset.cover) || current;
+  const src = img.getAttribute('src') || '';
+  if (src.includes('coverartarchive.org') && !img.dataset.retried) {
+    img.dataset.retried = '1';
+    setTimeout(() => { img.src = src + (src.includes('?') ? '&' : '?') + 'retry=1'; }, 1500);
+    return;
+  }
+  if (img.dataset.alt && !img.dataset.usedAlt) {
+    img.dataset.usedAlt = '1'; delete img.dataset.retried;
+    img.src = img.dataset.alt; return;
+  }
   const fallback = img.dataset.noPhoto ? '' : photoUrl(e);
   if (fallback && img.src !== fallback) img.src = fallback;
   else img.outerHTML = e ? typoCover(e) : '';
@@ -370,7 +383,7 @@ function renderSheet(e) {
   // Slides: the found artwork first, then always your own photo
   const slides = [];
   slides.push(r?.artwork
-    ? `<div class="slide"><img src="${esc(r.artwork)}" alt="Found artwork" data-cover="${esc(e.id)}" data-no-photo="1"></div>`
+    ? `<div class="slide"><img src="${esc(r.artwork)}" alt="Found artwork" data-cover="${esc(e.id)}" data-no-photo="1"${r.artworkAlt ? ` data-alt="${esc(r.artworkAlt)}"` : ''}></div>`
     : `<div class="slide">${e.photo && !r ? `<img src="${esc(photoUrl(e))}" alt="">` : typoCover(e)}</div>`);
   if (e.photo && (r?.artwork || r)) slides.push(`<div class="slide"><img src="${esc(photoUrl(e))}" alt="Your photo"><span class="tag mono">Your photo</span></div>`);
 
@@ -524,7 +537,22 @@ const PROJECT = DECEL / (1 - DECEL);       // ms: distance = velocity × this
 const SPRING = 0.016;                      // per ms: critically damped settle (~300 ms)
 const P = 1500, MAX_LEAN = 64;             // Cover Flow look
 
+// A fingerprint of what the crate or list shows. If nothing has changed since it was
+// built, the existing covers are reused as they are (already loaded and drawn) instead
+// of being rebuilt, which is what caused the blank-cover lag on returning.
+const signature = list => sortBy + '#' + list.map(e =>
+  [e.id, e.release?.artwork || '', displayTitle(e), displayArtist(e), e.photo ? 1 : 0, e.status].join('|')).join('~');
+let crateSig = '', listSig = '';
+
 function renderCrate() {
+  const sig = signature(entries);
+  if (sig === crateSig && sleeves.length) {        // nothing changed: just return to the record
+    stopAnim();
+    const i = entries.findIndex(e => e.id === lastViewedId);
+    layoutCrate(i >= 0 ? i : 0);
+    return;
+  }
+  crateSig = sig;
   crate.innerHTML = entries.map((e, i) =>
     `<button class="sleeve" data-i="${i}" style="z-index:${i + 1}" aria-label="${esc(displayArtist(e))} — ${esc(displayTitle(e))}">${coverImg(e, e.release?.artwork || photoUrl(e))}<i class="shade"></i></button>`
   ).join('');
@@ -759,6 +787,12 @@ function sortEntries(list) {
 }
 
 function renderList(restore = false) {
+  const sig = signature(entries) + '?' + q.value;
+  if (sig === listSig && listEl.children.length) { // nothing changed: keep the rows as they are
+    if (restore) centreListOn(lastViewedId);
+    return;
+  }
+  listSig = sig;
   const words = norm(q.value) ? q.value.toLowerCase().split(/\s+/).filter(Boolean) : [];
   const shown = entries.filter(e => {
     if (!words.length) return true;
@@ -781,10 +815,7 @@ function renderList(restore = false) {
     </div></li>`;
   }).join('');
   $('#noResults').hidden = shown.length > 0;
-  if (restore && lastViewedId) {
-    const li = listEl.querySelector(`[data-open="${CSS.escape(lastViewedId)}"]`)?.closest('li');
-    if (li) listEl.scrollTop = Math.max(0, li.offsetTop - (listEl.clientHeight - li.offsetHeight) / 2);
-  }
+  if (restore) centreListOn(lastViewedId);
 
   // A–Z index, only when sorted alphabetically and there's enough to scroll
   const showIndex = alpha && shown.length > 8;
@@ -794,6 +825,12 @@ function renderList(restore = false) {
     const present = new Set([...listEl.children].map(li => li.dataset.letter));
     az.innerHTML = LETTERS.map(l => `<span data-l="${l}" class="${present.has(l) ? '' : 'off'}">${l}</span>`).join('');
   }
+}
+
+function centreListOn(id) {
+  if (!id) return;
+  const li = listEl.querySelector(`[data-open="${CSS.escape(id)}"]`)?.closest('li');
+  if (li) listEl.scrollTop = Math.max(0, li.offsetTop - (listEl.clientHeight - li.offsetHeight) / 2);
 }
 
 // Jump to the first record under a letter (or the next letter that has records)
@@ -845,6 +882,34 @@ listEl.addEventListener('click', async ev => {
 });
 
 /* =========================================================
+   Artwork check for records saved before album-level artwork existed.
+   Quietly, one at a time, at most once per record.
+   ========================================================= */
+let artChecking = false;
+async function backfillArtwork() {
+  if (artChecking || !navigator.onLine) return;
+  artChecking = true;
+  let changed = false;
+  try {
+    for (const e of await allEntries()) {
+      const r = e.release;
+      if (!r?.id || e.artChecked || (r.artwork && 'artworkAlt' in r)) continue;
+      try {
+        const j = await api('/api/release?' + new URLSearchParams({ id: r.id }));
+        if (j.found) {
+          if (r.artwork !== j.release.artwork) changed = true;
+          r.artwork = j.release.artwork; r.artworkAlt = j.release.artworkAlt;
+        }
+        e.artChecked = true;
+        await saveEntry(e);
+      } catch { /* try again another time */ }
+      await new Promise(res => setTimeout(res, 1100)); // be polite to MusicBrainz
+    }
+  } finally { artChecking = false; }
+  if (changed && view === 'collection' && !sheetOpen()) renderCollection();
+}
+
+/* =========================================================
    Sample records — real lookups, so the design is judged on real artwork
    ========================================================= */
 const SAMPLES = [
@@ -880,3 +945,4 @@ $('#clearSamples').onclick = async () => {
    ========================================================= */
 startCamera();
 retryUnfinished();
+setTimeout(backfillArtwork, 4000); // after start-up, so it never competes with scanning
