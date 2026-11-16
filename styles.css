@@ -156,21 +156,27 @@ a { color: inherit; text-decoration: none; }
 }
 /* Search by text, floating over the live camera */
 .searchPanel {
-  position: absolute; z-index: 6; inset: 0; display: flex; align-items: flex-start; justify-content: center;
-  padding-top: max(calc(env(safe-area-inset-top) + 70px), 16vh); background: rgba(0,0,0,.28);
+  position: absolute; z-index: 6; inset: 0; display: flex; align-items: center; justify-content: center;
+  padding: calc(env(safe-area-inset-top) + 16px) 0 calc(env(safe-area-inset-bottom) + 16px); background: rgba(0,0,0,.28);
 }
 .spCard {
-  position: relative; width: min(380px, calc(100vw - 32px)); max-height: calc(100% - 200px); overflow-y: auto;
+  position: relative; width: min(380px, calc(100vw - 32px)); max-height: 100%; overflow-y: auto;
   padding: 20px 18px 18px; color: #fff;
   background: rgba(20,19,15,.62); -webkit-backdrop-filter: blur(18px) saturate(140%); backdrop-filter: blur(18px) saturate(140%);
 }
 .spClose { position: absolute; top: 4px; right: 6px; width: 40px; height: 40px; font-size: 26px; color: #fff; }
 #spForm { display: grid; gap: 8px; margin-top: 22px; }
+/* Over the camera: white outline and text; the field you're typing in flips to white */
 #spForm input {
-  width: 100%; font: 16px var(--display); padding: 11px 12px; color: #15130F;
-  background: rgba(255,255,255,.94); border: 0; border-radius: 0; -webkit-appearance: none; appearance: none;
+  width: 100%; padding: 11px 12px; border: 1.5px solid #fff; border-radius: 0; outline: none;
+  font-family: var(--display); font-size: 16px; font-weight: 700; font-stretch: 80%; letter-spacing: .06em; text-transform: uppercase;
+  color: #fff; background: rgba(0,0,0,.5); -webkit-appearance: none; appearance: none; transition: background .12s ease, color .12s ease;
 }
-#spForm .btn.solid { background: #fff; color: #15130F; border-color: #fff; justify-content: center; }
+#spForm input::placeholder { color: rgba(255,255,255,.6); }
+#spForm input:focus { background: #fff; color: #15130F; }
+#spForm input:focus::placeholder { color: rgba(21,19,15,.45); }
+#spForm .btn.solid { background: rgba(0,0,0,.5); color: #fff; border-color: #fff; justify-content: center; }
+#spForm .btn.solid:active { background: #fff; color: #15130F; }
 .spCard .cands button { border-bottom-color: rgba(255,255,255,.18); color: #fff; }
 .spCard .cands .mono, .spCard .cands .quiet { color: rgba(255,255,255,.65); }
 .spCard .cthumb { background: rgba(255,255,255,.12); }
@@ -276,10 +282,20 @@ body.searching .hint, body.searching .frame { opacity: 0; }
 .override { margin-top: 34px; padding-top: 14px; border-top: 1px solid var(--ink); }
 .override h4 { font-weight: 800; font-stretch: 75%; text-transform: uppercase; font-size: 18px; }
 .override form { display: grid; gap: 8px; margin-top: 12px; }
+/* Text fields match the Crate / List switch: bold condensed capitals in an outlined box.
+   The field you're typing in reverses, like the selected side of the switch.
+   (16px stops iPhone zooming in on the field.) */
 .override input, .searchbar input {
-  width: 100%; font: 16px var(--display); padding: 11px 12px; color: var(--ink);
-  background: var(--field); border: 1px solid var(--ink); border-radius: 0; -webkit-appearance: none; appearance: none;
+  width: 100%; padding: 11px 12px; border: 1.5px solid var(--ink); border-radius: 0;
+  font-family: var(--display); font-size: 16px; font-weight: 700; font-stretch: 80%;
+  letter-spacing: .06em; text-transform: uppercase;
+  color: var(--ink); background: var(--paper); outline: none;
+  -webkit-appearance: none; appearance: none; transition: background .12s ease, color .12s ease;
 }
+.override input::placeholder, .searchbar input::placeholder { color: var(--quiet); opacity: 1; }
+.override input:focus, .searchbar input:focus { background: var(--ink); color: var(--paper); }
+.override input:focus::placeholder, .searchbar input:focus::placeholder { color: var(--paper); opacity: .55; }
+.searchbar input::-webkit-search-cancel-button { filter: grayscale(1); }
 .cands { list-style: none; margin-top: 12px; }
 .cands button { width: 100%; text-align: left; padding: 10px 0; border-bottom: 1px solid var(--rule); display: grid; grid-template-columns: 60px 1fr; gap: 12px; align-items: center; }
 .cthumb { width: 60px; height: 60px; background: var(--paper-2); overflow: hidden; }
