@@ -1146,6 +1146,38 @@ $('#clearSamples').onclick = async () => {
 };
 
 /* =========================================================
+   Keep the app locked in place when the keyboard opens.
+   iOS slides the whole page up to make room for the keyboard; a web page can't stop that,
+   but it can see how far (visualViewport.offsetTop) and move everything straight back.
+   The field being typed in is then kept visible by moving only what needs to move:
+   the camera search box re-centres above the keyboard, and the album page scrolls itself.
+   ========================================================= */
+const vv = window.visualViewport;
+function lockViewport() {
+  if (!vv) return;
+  const shift = Math.max(0, vv.offsetTop);
+  document.body.style.transform = shift ? `translateY(${shift}px)` : '';
+  const keyboard = Math.max(0, innerHeight - vv.height - shift);
+  document.documentElement.style.setProperty('--kb', keyboard + 'px');
+}
+if (vv) { vv.addEventListener('resize', lockViewport); vv.addEventListener('scroll', lockViewport); }
+addEventListener('scroll', () => { if (scrollX || scrollY) scrollTo(0, 0); }, { passive: true });
+document.addEventListener('focusin', ev => {
+  const field = ev.target;
+  if (!(field instanceof HTMLInputElement)) return;
+  const scroller = field.closest('.sheet, .spCard, .list');
+  // wait for the keyboard to finish opening, then nudge the field into view if it's covered
+  setTimeout(() => {
+    lockViewport();
+    if (!vv || !scroller) return;
+    const limit = vv.offsetTop + vv.height - 16;
+    const r = field.getBoundingClientRect();
+    if (r.bottom > limit) scroller.scrollBy({ top: r.bottom - limit, behavior: 'smooth' });
+  }, 350);
+});
+document.addEventListener('focusout', () => setTimeout(lockViewport, 60));
+
+/* =========================================================
    Go
    ========================================================= */
 startCamera();

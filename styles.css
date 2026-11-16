@@ -29,7 +29,7 @@
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { height: 100%; }
+html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
 html { background: var(--paper); }
 /* On the camera, anything behind the page is black, never a grey band */
 html:has(body[data-view="scan"]), body[data-view="scan"] { background: #000; }
@@ -156,7 +156,7 @@ a { color: inherit; text-decoration: none; }
 }
 /* Search by text, floating over the live camera */
 .searchPanel {
-  position: absolute; z-index: 6; inset: 0; display: flex; align-items: center; justify-content: center;
+  position: absolute; z-index: 6; inset: 0 0 var(--kb, 0px) 0; display: flex; align-items: center; justify-content: center; /* centred in the space above the keyboard */
   padding: calc(env(safe-area-inset-top) + 16px) 0 calc(env(safe-area-inset-bottom) + 16px); background: rgba(0,0,0,.28);
 }
 .spCard {
