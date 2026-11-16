@@ -43,11 +43,13 @@ async function search(queries) {
   return null;
 }
 
+// Vinyl only: CD, cassette and digital releases are left out
 async function candidates(artist, album) {
   const seen = new Set(), out = [];
   for (const q of textQueries(artist, album)) {
-    const j = await mb(`/release?query=${encodeURIComponent(q)}&fmt=json&limit=25`);
+    const j = await mb(`/release?query=${encodeURIComponent(q)}&fmt=json&limit=100`);
     for (const r of j.releases || []) {
+      if (!isVinyl(r)) continue;
       const label = (r['label-info'] || [])[0] || {};
       const c = {
         id: r.id, title: r.title, artist: artistOf(r), year: (r.date || '').slice(0, 4), country: r.country || '',
@@ -61,9 +63,8 @@ async function candidates(artist, album) {
     }
     if (out.length >= 8) break;
   }
-  // Vinyl first among equally good matches
-  out.sort((x, y) => (y.score - x.score) || (/vinyl/i.test(y.format) - /vinyl/i.test(x.format)));
-  return out.slice(0, 12);
+  out.sort((x, y) => y.score - x.score);
+  return out.slice(0, 12).map(c => ({ ...c, thumb: `https://coverartarchive.org/release/${c.id}/front-250` }));
 }
 
 module.exports = async (req, res) => {
@@ -85,7 +86,10 @@ module.exports = async (req, res) => {
     }
     if (!hit) return res.json({ found: false });
 
-    const rel = await mb(`/release/${hit.id}?inc=recordings+artist-credits+labels&fmt=json`);
+    const rel = await mb(`/release/${hit.id}?inc=recordings+artist-credits+labels+release-groups&fmt=json`);
+    // Artwork: this exact pressing's cover if it has one, otherwise the album's best cover from any pressing
+    const own = rel['cover-art-archive']?.front ? `https://coverartarchive.org/release/${rel.id}/front-500` : '';
+    const group = rel['release-group']?.id ? `https://coverartarchive.org/release-group/${rel['release-group'].id}/front-500` : '';
     const label = (rel['label-info'] || [])[0] || {};
     res.setHeader('Cache-Control', 's-maxage=86400'); // let Vercel remember lookups for a day
     res.json({
@@ -100,7 +104,8 @@ module.exports = async (req, res) => {
         catno: label['catalog-number'] || '',
         format: [...new Set((rel.media || []).map(m => m.format).filter(Boolean))].join(', '),
         barcode: rel.barcode || '',
-        artwork: rel['cover-art-archive']?.front ? `https://coverartarchive.org/release/${rel.id}/front-500` : '',
+        artwork: own || group,
+        artworkAlt: own ? group : '',   // tried if the first image fails to load
         tracks: (rel.media || []).flatMap(m => (m.tracks || []).map(t => ({ n: t.number, title: t.title })))
       }
     });
