@@ -61,10 +61,8 @@ function photoUrl(e) {
   if (!urls.has(e.id)) urls.set(e.id, URL.createObjectURL(e.photo));
   return urls.get(e.id);
 }
-// A cover reading still waiting for its visual check is never shown anywhere
-const guessShown = e => !(e.status === 'identifying' && (e.guess?.kind === 'cover' || e.guess?.text_visible === false));
-const displayArtist = e => e.release?.artist || (guessShown(e) ? e.guess?.artist : '') || '';
-const displayTitle = e => e.release?.title || (guessShown(e) ? e.guess?.album : '') || '';
+const displayArtist = e => e.release?.artist || e.guess?.artist || '';
+const displayTitle = e => e.release?.title || e.guess?.album || '';
 function typoCover(e) {
   return `<div class="typo"><b>${esc(displayArtist(e) || 'Unknown')}</b><span>${esc(displayTitle(e))}</span></div>`;
 }
@@ -240,9 +238,8 @@ $('#shutter').onclick = async () => {
       entry = again;
       if (photo2Urls.has(entry.id)) { URL.revokeObjectURL(photo2Urls.get(entry.id)); photo2Urls.delete(entry.id); }
       entry.photo2 = photo; entry.source = 'photo';
-      delete entry.guess; delete entry.release; delete entry.choices; delete entry.error;
-      delete entry.ruledOut; delete entry.unidentified;
-      entry.status = 'identifying';
+      delete entry.guess; delete entry.release; delete entry.choices; delete entry.error; delete entry.verdict;
+      entry.status = 'identifying';  // ruledOut is kept, so Gemini won't repeat a rejected answer
     } else entry = { id: newId(), scannedAt, source: 'photo', status: 'identifying', photo };
     if (rescanFor) endRescan();
     saveEntry(entry);  // saved immediately; finished in the background
@@ -258,7 +255,7 @@ $('#shutter').onclick = async () => {
 function setBusy(on, text) {
   $('#shutter').classList.toggle('busy', on);
   $('#frame').classList.toggle('busy', on);
-  $('#hint').textContent = on ? text : rescanFor ? 'Now photograph the label · tap here to cancel' : 'Fill the frame with a cover or label';
+  $('#hint').textContent = on ? text : rescanFor ? 'Retake: cover or label · tap here to cancel' : 'Fill the frame with a cover or label';
 }
 
 /* Remembered corrections: once you've told the app which release a reading means,
@@ -295,64 +292,30 @@ async function identify(entry, base64) {
     if (g.catalogue_number) params.set('catno', g.catalogue_number);
     if (g.record_label) params.set('label', g.record_label);
     if (g.is_compilation) params.set('compilation', '1');
-    let sure = Number(g.confidence ?? 1); if (sure > 1) sure /= 100;
-    if (sure < 0.6) params.set('unsure', '1'); // Gemini itself wasn't sure: offer choices, don't answer
-    await findRelease(entry, params, 'photo', base64);
+    await findRelease(entry, params, 'photo');
   } catch (e) {
     entry.status = 'error'; entry.error = e.message;
     saveEntry(entry); refresh(entry);
   }
 }
 
-// Covers are checked by eye before being shown: your photo against the artwork found.
-// A mismatch means Gemini named the wrong record, so it's never shown; instead the app
-// asks Gemini again with that answer ruled out. After two misses it says so honestly.
-const MAX_TRIES = 2;
-async function coverMatches(entry, base64, release) {
-  const g = entry.guess || {};
-  if (!base64 || !release.artwork || (g.kind !== 'cover' && g.text_visible !== false)) return true; // labels: no cover to compare
-  entry.stage = 'checking'; refresh(entry);
-  try {
-    const { same } = await api('/api/compare', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image: base64, artwork: release.artwork })
-    });
-    return same !== 'no';
-  } catch { return true; } // a failed check never blocks a result
-  finally { delete entry.stage; }
-}
-
-async function findRelease(entry, params, by, base64) {
+async function findRelease(entry, params, by) {
   const j = await api('/api/release?' + params);
   delete entry.choices;
-  if (j.found && by === 'photo' && !(await coverMatches(entry, base64, j.release))) {
-    const wrong = `${j.release.artist} — ${j.release.title}`;
-    entry.ruledOut = [...(entry.ruledOut || []), wrong];
-    if (entry.ruledOut.length < MAX_TRIES) {          // try again, ruling out the wrong answer
-      delete entry.guess; delete entry.release;
-      entry.status = 'identifying'; saveEntry(entry); refresh(entry);
-      return identify(entry, base64);
-    }
-    delete entry.guess; delete entry.release;         // give up honestly rather than show a wrong cover
-    entry.status = 'notfound'; entry.unidentified = true;
-    saveEntry(entry); refresh(entry); return;
-  }
   if (j.found) {
-    entry.release = j.release; entry.status = 'done'; delete entry.error; delete entry.unidentified;
+    entry.release = j.release; entry.status = 'done'; delete entry.error; delete entry.verdict;
     entry.matchBy = by;
-  } else if (j.choices?.length) {
-    entry.status = 'choose'; entry.choices = j.choices; delete entry.release; // not sure: ask, never guess
   } else entry.status = 'notfound';
   saveEntry(entry); refresh(entry);
 }
 
-/* "Scan the label instead": a second photo of the same record re-identifies it,
-   keeping the first photo and the original scan time */
+/* "Retake photo": a second photo of the same record re-identifies it, keeping the first
+   photo and the original scan time, and ruling out any answer you've rejected */
 let rescanFor = null;
 function startRescan(e) {
   showView('scan');
   rescanFor = e.id;
-  $('#hint').textContent = 'Now photograph the label · tap here to cancel';
+  $('#hint').textContent = 'Retake: cover or label · tap here to cancel';
   $('#hint').classList.add('rescan');
 }
 function endRescan() {
@@ -462,23 +425,19 @@ function closeSheet() {
 
 function renderSheet(e) {
   const r = e.release, g = e.guess || {};
-  // A cover reading isn't shown until the cover has passed the visual check, so a wrong name never flashes up
-  const unconfirmed = e.status === 'identifying' && !r && (g.kind === 'cover' || g.text_visible === false);
-  const artist = unconfirmed ? '' : displayArtist(e), title = unconfirmed ? '' : displayTitle(e);
+  const artist = displayArtist(e), title = displayTitle(e);
   const details = r ? [r.label, r.catno, r.year, r.format].filter(Boolean).join(' · ') : (g.record_label || '');
   let status = '';
-  if (e.status === 'identifying') status = e.ruledOut?.length ? 'Not a match. Taking another look…' : unconfirmed ? 'Reading the record…' : artist ? 'Finding the tracklist…' : 'Reading the record…';
-  if (e.status === 'notfound' && e.unidentified) status = 'Couldn’t identify this cover with confidence. Scan the label, or search by title below.';
-  else if (e.status === 'notfound') status = artist ? 'Couldn’t find this record. Scan the label, or search by title below.' : 'Couldn’t recognise this record. Scan the label, or search by title below.';
-  if (e.status === 'choose') status = 'Not sure which record this is. Pick it below, or scan the label.';
+  if (e.status === 'identifying') status = artist ? 'Finding the tracklist…' : 'Reading the record…';
+  if (e.status === 'notfound') status = artist ? 'Couldn’t find this record.' : 'Couldn’t recognise this record.';
   if (e.status === 'error') status = 'No connection to the record database. It will finish by itself when you’re back online.';
 
-  // Slides: the found artwork first, then always your own photo
+  // Slides: the found artwork first, then always your own photo(s)
   const slides = [];
   slides.push(r?.artwork
     ? `<div class="slide"><img src="${esc(r.artwork)}" alt="Found artwork" data-cover="${esc(e.id)}" data-no-photo="1"${r.artworkAlt ? ` data-alt="${esc(r.artworkAlt)}"` : ''}></div>`
     : `<div class="slide">${e.photo && !r ? `<img src="${esc(photoUrl(e))}" alt="">` : typoCover(e)}</div>`);
-  if (e.photo && (r?.artwork || r)) slides.push(`<div class="slide"><img src="${esc(photoUrl(e))}" alt="Your photo"><span class="tag mono">Your photo</span></div>`);
+  if (e.photo && r) slides.push(`<div class="slide"><img src="${esc(photoUrl(e))}" alt="Your photo"><span class="tag mono">Your photo</span></div>`);
   if (e.photo2) slides.push(`<div class="slide"><img src="${esc(photo2Url(e))}" alt="Your second photo"><span class="tag mono">Your second photo</span></div>`);
 
   const tracks = r?.tracks || [];
@@ -491,41 +450,35 @@ function renderSheet(e) {
       <span class="n">${esc(t.n)}</span><span class="t">${esc(t.title)}</span><span class="go">${PLAY}</span></a></li>`;
   }).join('');
 
+  const needsFix = e.verdict === 'rejected' || e.status === 'notfound';
   sheet.innerHTML = `<div class="sheet-top"><button class="close" data-act="close" aria-label="Close">×</button></div>
   <div class="sheet-inner">
-    <div class="gallery">
+    <div class="gallery" id="gallery">
       <div class="slides">${slides.join('')}</div>
+      <div class="verdict" id="verdict">${verdictButtons(e)}</div>
       <div class="dots">${slides.length > 1 ? slides.map((_, i) => `<i class="${i ? '' : 'on'}"></i>`).join('') : ''}</div>
     </div>
-    ${(e.status === 'choose' || (e.status === 'identifying' && e.guess && !r && !unconfirmed)) ? '<p class="meta mono">Read from your photo</p>' : details ? `<p class="meta mono">${esc(details)}</p>` : ''}
+    ${details ? `<p class="meta mono">${esc(details)}</p>` : ''}
     <h2 class="artist">${esc(artist || (e.status === 'identifying' ? '…' : 'Unknown'))}</h2>
     <h3 class="title">${esc(title)}</h3>
     ${status ? `<p class="status mono ${e.status === 'error' ? 'err' : ''}">${esc(status)}</p>` : ''}
     ${e.status === 'error' ? '<button class="btn" data-act="retry" style="margin-top:12px">Try again</button>' : ''}
-    ${e.status === 'notfound' && artist ? `<a class="btn album-yt" href="${youtubeUrl(artist, title, '')}" target="_blank" rel="noopener">${PLAY} Search YouTube for the album</a>` : ''}
-    ${e.status === 'choose' ? `<section class="choose">
-      <h4>Which one is it?</h4>
-      <ul class="cands">${e.choices.map(c => `<li><button data-pick="${esc(c.id)}">
-        <span class="cthumb"><img src="${esc(c.thumb)}" alt="" data-thumb-alt="${esc(c.thumbAlt || '')}" onerror="if(this.dataset.thumbAlt&&this.src!==this.dataset.thumbAlt){this.src=this.dataset.thumbAlt}else{this.remove()}"></span>
-        <span class="ctext"><b>${esc(c.title)}</b><span>${esc(c.artist)}</span>
-        <span class="mono">${esc([c.year, c.format, c.label, c.catno].filter(Boolean).join(' · '))}</span></span>
-      </button></li>`).join('')}</ul>
-    </section>` : ''}
-    ${tracks.length ? `<p class="lead mono"><span>Tap a track to hear it on YouTube</span>${PLAY}</p><ol class="tracks">${rows}</ol>` : ''}
-    <p class="when mono">${e.sample ? 'Sample record · ' : 'Scanned '}${esc(when(e.scannedAt))}</p>
-
-    <section class="override">
-      <h4>${e.status === 'choose' || e.status === 'notfound' ? 'None of these?' : 'Wrong record?'}</h4>
-      ${e.sample ? '' : `<button class="btn rescan" data-act="rescan">Scan the label instead</button>
-      <p class="mono quiet" style="margin-top:14px">Or search by title and artist</p>`}
-      <form data-form="override">
+    <section class="fix" id="fix" ${needsFix ? '' : 'hidden'}>
+      <div class="fixButtons">
+        <button class="btn" data-act="retake">Retake photo</button>
+        <button class="btn" data-act="text">Search by text</button>
+        <button class="btn danger" data-act="delete">Delete</button>
+      </div>
+      <form data-form="override" hidden>
         <input name="title" placeholder="Title" value="${esc(title)}" autocomplete="off" enterkeyhint="search">
         <input name="artist" placeholder="Artist" value="${esc(artist)}" autocomplete="off" enterkeyhint="search">
         <button class="btn solid" type="submit">Search</button>
       </form>
       <ul class="cands" id="cands"></ul>
     </section>
-    <div class="removeRow"><button class="linkbtn mono" data-act="delete">Remove from collection</button></div>
+    ${e.status === 'notfound' && artist ? `<a class="btn album-yt" href="${youtubeUrl(artist, title, '')}" target="_blank" rel="noopener">${PLAY} Search YouTube for the album</a>` : ''}
+    ${tracks.length ? `<p class="lead mono"><span>Tap a track to hear it on YouTube</span>${PLAY}</p><ol class="tracks">${rows}</ol>` : ''}
+    <p class="when mono">${e.sample ? 'Sample record · ' : 'Scanned '}${esc(when(e.scannedAt))}</p>
   </div>`;
 
   // Dots follow the swipe
@@ -536,6 +489,28 @@ function renderSheet(e) {
   }, { passive: true });
 }
 
+// ✓ and ✗ in the corner of the artwork. Once confirmed, a small green tick (tap it to change your mind).
+const TICK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const CROSS = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg>';
+function verdictButtons(e) {
+  if (e.status !== 'done' || !e.release) return '';
+  if (e.verdict === 'confirmed') return `<button class="vbtn confirmed" data-act="reopen" aria-label="Confirmed. Tap to change">${TICK}</button>`;
+  return `<button class="vbtn yes" data-act="yes" aria-label="Right record">${TICK}</button>
+          <button class="vbtn no" data-act="no" aria-label="Wrong record">${CROSS}</button>`;
+}
+// Momentary bold border around the artwork: green for right, red for wrong
+function flashGallery(kind) {
+  const gal = sheet.querySelector('#gallery');
+  if (!gal) return;
+  gal.classList.remove('good', 'bad'); void gal.offsetWidth; gal.classList.add(kind);
+  setTimeout(() => gal.classList.remove(kind), 750);
+}
+function forgetFix(e) {
+  const key = fixKey(e.source === 'barcode' ? { barcode: e.barcode } : e.guess);
+  const all = readFixes();
+  if (key && key in all) { delete all[key]; try { localStorage.setItem('lh_fixes', JSON.stringify(all)); } catch {} }
+}
+
 sheet.addEventListener('click', async ev => {
   const t = ev.target.closest('[data-act], [data-track], [data-pick]');
   if (!t || !current) return;
@@ -544,15 +519,38 @@ sheet.addEventListener('click', async ev => {
   if (t.dataset.pick) return pickCandidate(e, t.dataset.pick);
   const act = t.dataset.act;
   if (act === 'close') { closeSheet(); if (view === 'collection') renderCollection(); }
+  if (act === 'yes') {                 // ✓ right record
+    e.verdict = 'confirmed'; saveEntry(e);
+    if (e.release?.id) rememberFix(e, e.release.id);
+    flashGallery('good');
+    sheet.querySelector('#verdict').innerHTML = verdictButtons(e);
+    sheet.querySelector('#fix').hidden = true;
+  }
+  if (act === 'no') {                  // ✗ wrong record
+    e.verdict = 'rejected'; saveEntry(e);
+    if (e.matchBy === 'remembered') forgetFix(e);
+    flashGallery('bad');
+    const fix = sheet.querySelector('#fix');
+    fix.hidden = false;
+    setTimeout(() => fix.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 250);
+  }
+  if (act === 'reopen') { delete e.verdict; saveEntry(e); sheet.querySelector('#verdict').innerHTML = verdictButtons(e); }
+  if (act === 'retake') {
+    if (e.release) e.ruledOut = [...(e.ruledOut || []), `${e.release.artist} — ${e.release.title}`]; // don't repeat it
+    saveEntry(e); startRescan(e); return;
+  }
+  if (act === 'text') {
+    const f = sheet.querySelector('[data-form="override"]');
+    f.hidden = false; f.querySelector('input').focus();
+  }
   if (act === 'retry') {
     e.status = 'identifying'; renderSheet(e);
     if (e.source === 'barcode') findRelease(e, new URLSearchParams({ barcode: e.barcode }), 'barcode').catch(() => {});
     else identify(e, await blobToBase64(await shrink(e.photo2 || e.photo)));
   }
-  if (act === 'rescan') { startRescan(e); return; }
   if (act === 'delete') {
     if (t.dataset.armed) { await removeEntry(e.id); closeSheet(); if (view === 'collection') renderCollection(); }
-    else { t.dataset.armed = '1'; t.textContent = 'Tap again to remove'; t.style.color = 'var(--red)'; }
+    else { t.dataset.armed = '1'; t.textContent = 'Tap again to delete'; }
   }
 });
 
@@ -584,6 +582,7 @@ async function pickCandidate(e, id) {
   try {
     await findRelease(e, new URLSearchParams({ id }), 'manual');
     rememberFix(e, id); // next time this reading goes straight here
+    e.verdict = 'confirmed'; saveEntry(e); refresh(e);
     sheet.scrollTo({ top: 0, behavior: 'smooth' });
   } catch (err) {
     if (list) list.innerHTML = `<li class="mono" style="padding:12px 0;color:var(--red)">${esc(err.message)}</li>`;
@@ -646,7 +645,7 @@ const P = 1500, MAX_LEAN = 64;             // Cover Flow look
 // built, the existing covers are reused as they are (already loaded and drawn) instead
 // of being rebuilt, which is what caused the blank-cover lag on returning.
 const signature = list => sortBy + '#' + list.map(e =>
-  [e.id, e.release?.artwork || '', displayTitle(e), displayArtist(e), e.photo ? 1 : 0, e.status].join('|')).join('~');
+  [e.id, e.release?.artwork || '', displayTitle(e), displayArtist(e), e.photo ? 1 : 0, e.status, e.verdict || ''].join('|')).join('~');
 let crateSig = '', listSig = '';
 
 function renderCrate() {
@@ -849,7 +848,7 @@ function renderInfo(e) {
   if (!e) return;
   $('#crateInfo').innerHTML = `<div class="a">${esc(displayArtist(e) || '…')}</div>
     <div class="t">${esc(displayTitle(e))}</div>
-    <div class="w mono">${esc((e.status === 'choose' || e.status === 'notfound') ? 'Needs checking · tap to choose' : e.sample ? 'Sample record' : when(e.scannedAt))}</div>`;
+    <div class="w mono">${esc((e.status === 'notfound' || e.verdict === 'rejected') ? 'Needs checking' : e.sample ? 'Sample record' : when(e.scannedAt))}</div>`;
   $('#crateInfo').querySelectorAll('.a, .t').forEach(marquee);
 }
 
@@ -919,7 +918,7 @@ function renderList(restore = false) {
   listEl.innerHTML = shown.map(e => {
     const r = e.release || {};
     // sorted by Date: show when it was scanned, so the order makes sense at a glance
-    const meta = (e.status === 'choose' || e.status === 'notfound') ? 'Needs checking'
+    const meta = (e.status === 'notfound' || e.verdict === 'rejected') ? 'Needs checking'
       : sortBy === 'date' ? when(e.scannedAt) : [r.year, r.label, r.format].filter(Boolean).join(' · ');
     const letter = alpha ? letterOf(sortBy === 'title' ? displayTitle(e) : displayArtist(e)) : '';
     return `<li data-letter="${letter}"><div class="swipe">
