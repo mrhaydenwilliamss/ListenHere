@@ -238,8 +238,8 @@ $('#shutter').onclick = async () => {
       entry = again;
       if (photo2Urls.has(entry.id)) { URL.revokeObjectURL(photo2Urls.get(entry.id)); photo2Urls.delete(entry.id); }
       entry.photo2 = photo; entry.source = 'photo';
-      delete entry.guess; delete entry.release; delete entry.choices; delete entry.error; delete entry.verdict;
-      entry.status = 'identifying';  // ruledOut is kept, so Gemini won't repeat a rejected answer
+      delete entry.guess; delete entry.release; delete entry.choices; delete entry.error;
+      entry.status = 'identifying';
     } else entry = { id: newId(), scannedAt, source: 'photo', status: 'identifying', photo };
     if (rescanFor) endRescan();
     saveEntry(entry);  // saved immediately; finished in the background
@@ -255,7 +255,7 @@ $('#shutter').onclick = async () => {
 function setBusy(on, text) {
   $('#shutter').classList.toggle('busy', on);
   $('#frame').classList.toggle('busy', on);
-  $('#hint').textContent = on ? text : rescanFor ? 'Retake: cover or label · tap here to cancel' : 'Fill the frame with a cover or label';
+  $('#hint').textContent = on ? text : rescanFor ? 'Now photograph the label · tap here to cancel' : 'Fill the frame with a cover or label';
 }
 
 /* Remembered corrections: once you've told the app which release a reading means,
@@ -275,7 +275,7 @@ async function identify(entry, base64) {
     if (!entry.guess) {
       const { guess } = await api('/api/identify', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: base64, exclude: entry.ruledOut || [] })
+        body: JSON.stringify({ image: base64 })
       });
       entry.guess = guess;
       if (guess.kind === 'unknown' || (!guess.album && !guess.artist)) {
@@ -287,11 +287,8 @@ async function identify(entry, base64) {
     const g = entry.guess;
     const fixed = knownFix(g);
     if (fixed) return await findRelease(entry, new URLSearchParams({ id: fixed }), 'remembered');
-    // verify=1: the server only answers confidently when what it found matches what was read
-    const params = new URLSearchParams({ verify: 1, artist: g.artist || '', album: g.album || '' });
+    const params = new URLSearchParams({ artist: g.artist || '', album: g.album || '' });
     if (g.catalogue_number) params.set('catno', g.catalogue_number);
-    if (g.record_label) params.set('label', g.record_label);
-    if (g.is_compilation) params.set('compilation', '1');
     await findRelease(entry, params, 'photo');
   } catch (e) {
     entry.status = 'error'; entry.error = e.message;
@@ -303,19 +300,19 @@ async function findRelease(entry, params, by) {
   const j = await api('/api/release?' + params);
   delete entry.choices;
   if (j.found) {
-    entry.release = j.release; entry.status = 'done'; delete entry.error; delete entry.verdict;
+    entry.release = j.release; entry.status = 'done'; delete entry.error;
     entry.matchBy = by;
   } else entry.status = 'notfound';
   saveEntry(entry); refresh(entry);
 }
 
-/* "Retake photo": a second photo of the same record re-identifies it, keeping the first
-   photo and the original scan time, and ruling out any answer you've rejected */
+/* "Scan the label instead": a second photo of the same record re-identifies it,
+   keeping the first photo and the original scan time */
 let rescanFor = null;
 function startRescan(e) {
   showView('scan');
   rescanFor = e.id;
-  $('#hint').textContent = 'Retake: cover or label · tap here to cancel';
+  $('#hint').textContent = 'Now photograph the label · tap here to cancel';
   $('#hint').classList.add('rescan');
 }
 function endRescan() {
@@ -429,7 +426,7 @@ function renderSheet(e) {
   const details = r ? [r.label, r.catno, r.year, r.format].filter(Boolean).join(' · ') : (g.record_label || '');
   let status = '';
   if (e.status === 'identifying') status = artist ? 'Finding the tracklist…' : 'Reading the record…';
-  if (e.status === 'notfound') status = artist ? 'Couldn’t find this record.' : 'Couldn’t recognise this record.';
+  if (e.status === 'notfound') status = artist ? 'Couldn’t find this record. Scan the label, or search by title below.' : 'Couldn’t recognise this record. Scan the label, or search by title below.';
   if (e.status === 'error') status = 'No connection to the record database. It will finish by itself when you’re back online.';
 
   // Slides: the found artwork first, then always your own photo(s)
@@ -450,12 +447,10 @@ function renderSheet(e) {
       <span class="n">${esc(t.n)}</span><span class="t">${esc(t.title)}</span><span class="go">${PLAY}</span></a></li>`;
   }).join('');
 
-  const needsFix = e.verdict === 'rejected' || e.status === 'notfound';
   sheet.innerHTML = `<div class="sheet-top"><button class="close" data-act="close" aria-label="Close">×</button></div>
   <div class="sheet-inner">
     <div class="gallery" id="gallery">
       <div class="slides">${slides.join('')}</div>
-      <div class="verdict" id="verdict">${verdictButtons(e)}</div>
       <div class="dots">${slides.length > 1 ? slides.map((_, i) => `<i class="${i ? '' : 'on'}"></i>`).join('') : ''}</div>
     </div>
     ${details ? `<p class="meta mono">${esc(details)}</p>` : ''}
@@ -463,22 +458,22 @@ function renderSheet(e) {
     <h3 class="title">${esc(title)}</h3>
     ${status ? `<p class="status mono ${e.status === 'error' ? 'err' : ''}">${esc(status)}</p>` : ''}
     ${e.status === 'error' ? '<button class="btn" data-act="retry" style="margin-top:12px">Try again</button>' : ''}
-    <section class="fix" id="fix" ${needsFix ? '' : 'hidden'}>
-      <div class="fixButtons">
-        <button class="btn" data-act="retake">Retake photo</button>
-        <button class="btn" data-act="text">Search by text</button>
-        <button class="btn danger" data-act="delete">Delete</button>
-      </div>
-      <form data-form="override" hidden>
+    ${e.status === 'notfound' && artist ? `<a class="btn album-yt" href="${youtubeUrl(artist, title, '')}" target="_blank" rel="noopener">${PLAY} Search YouTube for the album</a>` : ''}
+    ${tracks.length ? `<p class="lead mono"><span>Tap a track to hear it on YouTube</span>${PLAY}</p><ol class="tracks">${rows}</ol>` : ''}
+    <p class="when mono">${e.sample ? 'Sample record · ' : 'Scanned '}${esc(when(e.scannedAt))}</p>
+
+    <section class="override">
+      <h4>Wrong record?</h4>
+      ${e.sample ? '' : `<button class="btn rescan" data-act="rescan">Scan the label instead</button>
+      <p class="mono quiet" style="margin-top:14px">Or search by title and artist</p>`}
+      <form data-form="override">
         <input name="title" placeholder="Title" value="${esc(title)}" autocomplete="off" enterkeyhint="search">
         <input name="artist" placeholder="Artist" value="${esc(artist)}" autocomplete="off" enterkeyhint="search">
         <button class="btn solid" type="submit">Search</button>
       </form>
       <ul class="cands" id="cands"></ul>
     </section>
-    ${e.status === 'notfound' && artist ? `<a class="btn album-yt" href="${youtubeUrl(artist, title, '')}" target="_blank" rel="noopener">${PLAY} Search YouTube for the album</a>` : ''}
-    ${tracks.length ? `<p class="lead mono"><span>Tap a track to hear it on YouTube</span>${PLAY}</p><ol class="tracks">${rows}</ol>` : ''}
-    <p class="when mono">${e.sample ? 'Sample record · ' : 'Scanned '}${esc(when(e.scannedAt))}</p>
+    <div class="removeRow"><button class="linkbtn mono" data-act="delete">Remove from collection</button></div>
   </div>`;
 
   // Dots follow the swipe
@@ -489,28 +484,6 @@ function renderSheet(e) {
   }, { passive: true });
 }
 
-// ✓ and ✗ in the corner of the artwork. Once confirmed, a small green tick (tap it to change your mind).
-const TICK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-const CROSS = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg>';
-function verdictButtons(e) {
-  if (e.status !== 'done' || !e.release) return '';
-  if (e.verdict === 'confirmed') return `<button class="vbtn confirmed" data-act="reopen" aria-label="Confirmed. Tap to change">${TICK}</button>`;
-  return `<button class="vbtn yes" data-act="yes" aria-label="Right record">${TICK}</button>
-          <button class="vbtn no" data-act="no" aria-label="Wrong record">${CROSS}</button>`;
-}
-// Momentary bold border around the artwork: green for right, red for wrong
-function flashGallery(kind) {
-  const gal = sheet.querySelector('#gallery');
-  if (!gal) return;
-  gal.classList.remove('good', 'bad'); void gal.offsetWidth; gal.classList.add(kind);
-  setTimeout(() => gal.classList.remove(kind), 750);
-}
-function forgetFix(e) {
-  const key = fixKey(e.source === 'barcode' ? { barcode: e.barcode } : e.guess);
-  const all = readFixes();
-  if (key && key in all) { delete all[key]; try { localStorage.setItem('lh_fixes', JSON.stringify(all)); } catch {} }
-}
-
 sheet.addEventListener('click', async ev => {
   const t = ev.target.closest('[data-act], [data-track], [data-pick]');
   if (!t || !current) return;
@@ -519,38 +492,15 @@ sheet.addEventListener('click', async ev => {
   if (t.dataset.pick) return pickCandidate(e, t.dataset.pick);
   const act = t.dataset.act;
   if (act === 'close') { closeSheet(); if (view === 'collection') renderCollection(); }
-  if (act === 'yes') {                 // ✓ right record
-    e.verdict = 'confirmed'; saveEntry(e);
-    if (e.release?.id) rememberFix(e, e.release.id);
-    flashGallery('good');
-    sheet.querySelector('#verdict').innerHTML = verdictButtons(e);
-    sheet.querySelector('#fix').hidden = true;
-  }
-  if (act === 'no') {                  // ✗ wrong record
-    e.verdict = 'rejected'; saveEntry(e);
-    if (e.matchBy === 'remembered') forgetFix(e);
-    flashGallery('bad');
-    const fix = sheet.querySelector('#fix');
-    fix.hidden = false;
-    setTimeout(() => fix.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 250);
-  }
-  if (act === 'reopen') { delete e.verdict; saveEntry(e); sheet.querySelector('#verdict').innerHTML = verdictButtons(e); }
-  if (act === 'retake') {
-    if (e.release) e.ruledOut = [...(e.ruledOut || []), `${e.release.artist} — ${e.release.title}`]; // don't repeat it
-    saveEntry(e); startRescan(e); return;
-  }
-  if (act === 'text') {
-    const f = sheet.querySelector('[data-form="override"]');
-    f.hidden = false; f.querySelector('input').focus();
-  }
   if (act === 'retry') {
     e.status = 'identifying'; renderSheet(e);
     if (e.source === 'barcode') findRelease(e, new URLSearchParams({ barcode: e.barcode }), 'barcode').catch(() => {});
     else identify(e, await blobToBase64(await shrink(e.photo2 || e.photo)));
   }
+  if (act === 'rescan') { startRescan(e); return; }
   if (act === 'delete') {
     if (t.dataset.armed) { await removeEntry(e.id); closeSheet(); if (view === 'collection') renderCollection(); }
-    else { t.dataset.armed = '1'; t.textContent = 'Tap again to delete'; }
+    else { t.dataset.armed = '1'; t.textContent = 'Tap again to remove'; t.style.color = 'var(--red)'; }
   }
 });
 
@@ -582,7 +532,6 @@ async function pickCandidate(e, id) {
   try {
     await findRelease(e, new URLSearchParams({ id }), 'manual');
     rememberFix(e, id); // next time this reading goes straight here
-    e.verdict = 'confirmed'; saveEntry(e); refresh(e);
     sheet.scrollTo({ top: 0, behavior: 'smooth' });
   } catch (err) {
     if (list) list.innerHTML = `<li class="mono" style="padding:12px 0;color:var(--red)">${esc(err.message)}</li>`;
@@ -645,7 +594,7 @@ const P = 1500, MAX_LEAN = 64;             // Cover Flow look
 // built, the existing covers are reused as they are (already loaded and drawn) instead
 // of being rebuilt, which is what caused the blank-cover lag on returning.
 const signature = list => sortBy + '#' + list.map(e =>
-  [e.id, e.release?.artwork || '', displayTitle(e), displayArtist(e), e.photo ? 1 : 0, e.status, e.verdict || ''].join('|')).join('~');
+  [e.id, e.release?.artwork || '', displayTitle(e), displayArtist(e), e.photo ? 1 : 0, e.status].join('|')).join('~');
 let crateSig = '', listSig = '';
 
 function renderCrate() {
@@ -848,7 +797,7 @@ function renderInfo(e) {
   if (!e) return;
   $('#crateInfo').innerHTML = `<div class="a">${esc(displayArtist(e) || '…')}</div>
     <div class="t">${esc(displayTitle(e))}</div>
-    <div class="w mono">${esc((e.status === 'notfound' || e.verdict === 'rejected') ? 'Needs checking' : e.sample ? 'Sample record' : when(e.scannedAt))}</div>`;
+    <div class="w mono">${esc(e.status === 'notfound' ? 'Needs checking' : e.sample ? 'Sample record' : when(e.scannedAt))}</div>`;
   $('#crateInfo').querySelectorAll('.a, .t').forEach(marquee);
 }
 
@@ -918,7 +867,7 @@ function renderList(restore = false) {
   listEl.innerHTML = shown.map(e => {
     const r = e.release || {};
     // sorted by Date: show when it was scanned, so the order makes sense at a glance
-    const meta = (e.status === 'notfound' || e.verdict === 'rejected') ? 'Needs checking'
+    const meta = e.status === 'notfound' ? 'Needs checking'
       : sortBy === 'date' ? when(e.scannedAt) : [r.year, r.label, r.format].filter(Boolean).join(' · ');
     const letter = alpha ? letterOf(sortBy === 'title' ? displayTitle(e) : displayArtist(e)) : '';
     return `<li data-letter="${letter}"><div class="swipe">

@@ -238,7 +238,7 @@ a { color: inherit; text-decoration: none; }
 .override { margin-top: 34px; padding-top: 14px; border-top: 1px solid var(--ink); }
 .override h4 { font-weight: 800; font-stretch: 75%; text-transform: uppercase; font-size: 18px; }
 .override form { display: grid; gap: 8px; margin-top: 12px; }
-.override input, .searchbar input, .fix input {
+.override input, .searchbar input {
   width: 100%; font: 16px var(--display); padding: 11px 12px; color: var(--ink);
   background: var(--field); border: 1px solid var(--ink); border-radius: 0; -webkit-appearance: none; appearance: none;
 }
@@ -251,31 +251,7 @@ a { color: inherit; text-decoration: none; }
 .cands .mono { color: var(--quiet); }
 .removeRow { margin-top: 22px; }
 
-/* ✓ / ✗ in the bottom-right corner of the artwork */
-.verdict { position: absolute; z-index: 2; right: 10px; bottom: 32px; display: flex; gap: 8px; }
-.vbtn {
-  width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; color: #fff;
-  background: rgba(20,19,15,.55); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
-  transition: transform .12s ease;
-}
-.vbtn svg { width: 24px; height: 24px; }
-.vbtn:active { transform: scale(.9); }
-.vbtn.confirmed { width: 34px; height: 34px; background: rgb(0,255,0); color: #000; }
-.vbtn.confirmed svg { width: 20px; height: 20px; }
-/* Momentary bold border: green = right record, red = wrong record */
-.gallery::after {
-  content: ''; position: absolute; z-index: 1; left: 0; right: 0; top: 0; aspect-ratio: 1; pointer-events: none;
-}
-.gallery.good::after { animation: vGood .7s cubic-bezier(.2,.8,.2,1); }
-.gallery.bad::after { animation: vBad .7s cubic-bezier(.2,.8,.2,1); }
-@keyframes vGood { 15%, 55% { box-shadow: inset 0 0 0 7px rgb(0,255,0); } }
-@keyframes vBad  { 15%, 55% { box-shadow: inset 0 0 0 7px rgb(255,0,0); } }
 
-/* Options after ✗ */
-.fix { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--ink); }
-.fixButtons { display: flex; flex-wrap: wrap; gap: 8px; }
-.btn.danger { border-color: var(--red); color: var(--red); }
-.fix form { display: grid; gap: 8px; margin-top: 12px; }
 .choose { margin-top: 22px; }
 .choose h4 { font-weight: 800; font-stretch: 75%; text-transform: uppercase; font-size: 18px; }
 .btn.rescan { margin-top: 12px; }
