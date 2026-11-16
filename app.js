@@ -61,8 +61,10 @@ function photoUrl(e) {
   if (!urls.has(e.id)) urls.set(e.id, URL.createObjectURL(e.photo));
   return urls.get(e.id);
 }
-const displayArtist = e => e.release?.artist || e.guess?.artist || '';
-const displayTitle = e => e.release?.title || e.guess?.album || '';
+// A cover reading still waiting for its visual check is never shown anywhere
+const guessShown = e => !(e.status === 'identifying' && (e.guess?.kind === 'cover' || e.guess?.text_visible === false));
+const displayArtist = e => e.release?.artist || (guessShown(e) ? e.guess?.artist : '') || '';
+const displayTitle = e => e.release?.title || (guessShown(e) ? e.guess?.album : '') || '';
 function typoCover(e) {
   return `<div class="typo"><b>${esc(displayArtist(e) || 'Unknown')}</b><span>${esc(displayTitle(e))}</span></div>`;
 }
@@ -239,6 +241,7 @@ $('#shutter').onclick = async () => {
       if (photo2Urls.has(entry.id)) { URL.revokeObjectURL(photo2Urls.get(entry.id)); photo2Urls.delete(entry.id); }
       entry.photo2 = photo; entry.source = 'photo';
       delete entry.guess; delete entry.release; delete entry.choices; delete entry.error;
+      delete entry.ruledOut; delete entry.unidentified;
       entry.status = 'identifying';
     } else entry = { id: newId(), scannedAt, source: 'photo', status: 'identifying', photo };
     if (rescanFor) endRescan();
@@ -274,7 +277,8 @@ async function identify(entry, base64) {
   try {
     if (!entry.guess) {
       const { guess } = await api('/api/identify', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image: base64 })
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: base64, exclude: entry.ruledOut || [] })
       });
       entry.guess = guess;
       if (guess.kind === 'unknown' || (!guess.album && !guess.artist)) {
@@ -293,18 +297,48 @@ async function identify(entry, base64) {
     if (g.is_compilation) params.set('compilation', '1');
     let sure = Number(g.confidence ?? 1); if (sure > 1) sure /= 100;
     if (sure < 0.6) params.set('unsure', '1'); // Gemini itself wasn't sure: offer choices, don't answer
-    await findRelease(entry, params, 'photo');
+    await findRelease(entry, params, 'photo', base64);
   } catch (e) {
     entry.status = 'error'; entry.error = e.message;
     saveEntry(entry); refresh(entry);
   }
 }
 
-async function findRelease(entry, params, by) {
+// Covers are checked by eye before being shown: your photo against the artwork found.
+// A mismatch means Gemini named the wrong record, so it's never shown; instead the app
+// asks Gemini again with that answer ruled out. After two misses it says so honestly.
+const MAX_TRIES = 2;
+async function coverMatches(entry, base64, release) {
+  const g = entry.guess || {};
+  if (!base64 || !release.artwork || (g.kind !== 'cover' && g.text_visible !== false)) return true; // labels: no cover to compare
+  entry.stage = 'checking'; refresh(entry);
+  try {
+    const { same } = await api('/api/compare', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: base64, artwork: release.artwork })
+    });
+    return same !== 'no';
+  } catch { return true; } // a failed check never blocks a result
+  finally { delete entry.stage; }
+}
+
+async function findRelease(entry, params, by, base64) {
   const j = await api('/api/release?' + params);
   delete entry.choices;
+  if (j.found && by === 'photo' && !(await coverMatches(entry, base64, j.release))) {
+    const wrong = `${j.release.artist} — ${j.release.title}`;
+    entry.ruledOut = [...(entry.ruledOut || []), wrong];
+    if (entry.ruledOut.length < MAX_TRIES) {          // try again, ruling out the wrong answer
+      delete entry.guess; delete entry.release;
+      entry.status = 'identifying'; saveEntry(entry); refresh(entry);
+      return identify(entry, base64);
+    }
+    delete entry.guess; delete entry.release;         // give up honestly rather than show a wrong cover
+    entry.status = 'notfound'; entry.unidentified = true;
+    saveEntry(entry); refresh(entry); return;
+  }
   if (j.found) {
-    entry.release = j.release; entry.status = 'done'; delete entry.error;
+    entry.release = j.release; entry.status = 'done'; delete entry.error; delete entry.unidentified;
     entry.matchBy = by;
   } else if (j.choices?.length) {
     entry.status = 'choose'; entry.choices = j.choices; delete entry.release; // not sure: ask, never guess
@@ -428,11 +462,14 @@ function closeSheet() {
 
 function renderSheet(e) {
   const r = e.release, g = e.guess || {};
-  const artist = displayArtist(e), title = displayTitle(e);
+  // A cover reading isn't shown until the cover has passed the visual check, so a wrong name never flashes up
+  const unconfirmed = e.status === 'identifying' && !r && (g.kind === 'cover' || g.text_visible === false);
+  const artist = unconfirmed ? '' : displayArtist(e), title = unconfirmed ? '' : displayTitle(e);
   const details = r ? [r.label, r.catno, r.year, r.format].filter(Boolean).join(' · ') : (g.record_label || '');
   let status = '';
-  if (e.status === 'identifying') status = artist ? 'Finding the tracklist…' : 'Reading the record…';
-  if (e.status === 'notfound') status = artist ? 'Couldn’t find this record. Scan the label, or search by title below.' : 'Couldn’t recognise this record. Scan the label, or search by title below.';
+  if (e.status === 'identifying') status = e.ruledOut?.length ? 'Not a match. Taking another look…' : unconfirmed ? 'Reading the record…' : artist ? 'Finding the tracklist…' : 'Reading the record…';
+  if (e.status === 'notfound' && e.unidentified) status = 'Couldn’t identify this cover with confidence. Scan the label, or search by title below.';
+  else if (e.status === 'notfound') status = artist ? 'Couldn’t find this record. Scan the label, or search by title below.' : 'Couldn’t recognise this record. Scan the label, or search by title below.';
   if (e.status === 'choose') status = 'Not sure which record this is. Pick it below, or scan the label.';
   if (e.status === 'error') status = 'No connection to the record database. It will finish by itself when you’re back online.';
 
@@ -460,7 +497,7 @@ function renderSheet(e) {
       <div class="slides">${slides.join('')}</div>
       <div class="dots">${slides.length > 1 ? slides.map((_, i) => `<i class="${i ? '' : 'on'}"></i>`).join('') : ''}</div>
     </div>
-    ${e.status === 'choose' ? '<p class="meta mono">Read from your photo</p>' : details ? `<p class="meta mono">${esc(details)}</p>` : ''}
+    ${(e.status === 'choose' || (e.status === 'identifying' && e.guess && !r && !unconfirmed)) ? '<p class="meta mono">Read from your photo</p>' : details ? `<p class="meta mono">${esc(details)}</p>` : ''}
     <h2 class="artist">${esc(artist || (e.status === 'identifying' ? '…' : 'Unknown'))}</h2>
     <h3 class="title">${esc(title)}</h3>
     ${status ? `<p class="status mono ${e.status === 'error' ? 'err' : ''}">${esc(status)}</p>` : ''}
