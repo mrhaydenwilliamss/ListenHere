@@ -562,7 +562,7 @@ function renderSheet(e) {
     ${e.status === 'error' ? '<button class="btn" data-act="retry" style="margin-top:12px">Try again</button>' : ''}
     ${e.status === 'notfound' && artist ? `<a class="btn album-yt" href="${youtubeUrl(artist, title, '')}" target="_blank" rel="noopener">${PLAY} Search YouTube for the album</a>` : ''}
     ${tracks.length ? `<p class="lead mono"><span>Tap a track to hear it on YouTube</span>${PLAY}</p><ol class="tracks">${rows}</ol>` : ''}
-    <p class="when mono">${e.sample ? 'Sample record · ' : 'Scanned '}${esc(when(e.scannedAt))}</p>
+    <p class="when mono">${e.sample ? 'Sample record · ' : 'Scanned '}${esc(when(e.scannedAt))}${r?.source === 'discogs' ? ` · <a href="${esc(r.url)}" target="_blank" rel="noopener">Data provided by Discogs</a>` : ''}</p>
 
     <section class="override">
       <h4>Wrong record?</h4>
@@ -1153,27 +1153,35 @@ $('#clearSamples').onclick = async () => {
    the camera search box re-centres above the keyboard, and the album page scrolls itself.
    ========================================================= */
 const vv = window.visualViewport;
+let fixTimer = 0;
 function lockViewport() {
   if (!vv) return;
   const shift = Math.max(0, vv.offsetTop);
   document.body.style.transform = shift ? `translateY(${shift}px)` : '';
-  const keyboard = Math.max(0, innerHeight - vv.height - shift);
-  document.documentElement.style.setProperty('--kb', keyboard + 'px');
+  // everything below the visible area (the keyboard, plus any slide iOS has made)
+  const hidden = Math.max(0, innerHeight - vv.height);
+  document.documentElement.style.setProperty('--kb', hidden + 'px');
+  document.documentElement.classList.toggle('kbOpen', hidden > 80);
+  // keep the field being typed in visible while the keyboard animates
+  clearTimeout(fixTimer);
+  fixTimer = setTimeout(() => keepFieldVisible(document.activeElement), 60);
+}
+// Scroll the field's own container (album page, search box, list) so the field sits mid-way
+// in the space above the keyboard. The rest of the app never moves.
+function keepFieldVisible(field) {
+  if (!(field instanceof HTMLInputElement)) return;
+  const scroller = field.closest('.sheet, .spCard, .list');
+  if (!scroller) return;
+  const box = scroller.getBoundingClientRect(), r = field.getBoundingClientRect();
+  const top = Math.max(box.top, vv ? vv.offsetTop : 0), bottom = Math.min(box.bottom, vv ? vv.offsetTop + vv.height : innerHeight);
+  if (r.top >= top + 12 && r.bottom <= bottom - 12) return;                 // already comfortably visible
+  scroller.scrollBy({ top: (r.top + r.bottom) / 2 - (top + bottom) / 2, behavior: 'smooth' });
 }
 if (vv) { vv.addEventListener('resize', lockViewport); vv.addEventListener('scroll', lockViewport); }
 addEventListener('scroll', () => { if (scrollX || scrollY) scrollTo(0, 0); }, { passive: true });
 document.addEventListener('focusin', ev => {
-  const field = ev.target;
-  if (!(field instanceof HTMLInputElement)) return;
-  const scroller = field.closest('.sheet, .spCard, .list');
-  // wait for the keyboard to finish opening, then nudge the field into view if it's covered
-  setTimeout(() => {
-    lockViewport();
-    if (!vv || !scroller) return;
-    const limit = vv.offsetTop + vv.height - 16;
-    const r = field.getBoundingClientRect();
-    if (r.bottom > limit) scroller.scrollBy({ top: r.bottom - limit, behavior: 'smooth' });
-  }, 350);
+  // check a few times as the keyboard slides in (iOS reports its size as it goes)
+  for (const ms of [120, 320, 600]) setTimeout(() => { lockViewport(); keepFieldVisible(ev.target); }, ms);
 });
 document.addEventListener('focusout', () => setTimeout(lockViewport, 60));
 
