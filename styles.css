@@ -250,6 +250,11 @@ a { color: inherit; text-decoration: none; }
 .cands b { font-weight: 600; }
 .cands .mono { color: var(--quiet); }
 .removeRow { margin-top: 22px; }
+.choose { margin-top: 22px; }
+.choose h4 { font-weight: 800; font-stretch: 75%; text-transform: uppercase; font-size: 18px; }
+.btn.rescan { margin-top: 12px; }
+.hint.rescan { pointer-events: auto; cursor: pointer; color: #fff; }
+.hint.rescan::before { content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--flash, #FF6B1A); margin-right: 8px; vertical-align: 1px; }
 
 /* ---------- Collection header ---------- */
 #collection { background: var(--paper); }

@@ -104,7 +104,7 @@ function showView(v) {
   document.querySelectorAll('.view').forEach(el => el.classList.toggle('active', el.id === v));
   document.body.dataset.view = v;
   closeSheet();
-  if (v === 'collection') renderCollection();
+  if (v === 'collection') { if (rescanFor) endRescan(); renderCollection(); }
   if (v === 'scan') ensureCamera();
 }
 document.querySelectorAll('[data-go]').forEach(b => b.onclick = () => showView(b.dataset.go));
@@ -232,7 +232,16 @@ $('#shutter').onclick = async () => {
   try {
     const { photo, small } = await capture();
     freezePreview(); // freeze the preview exactly as framed
-    const entry = { id: newId(), scannedAt, source: 'photo', status: 'identifying', photo };
+    let entry;
+    const again = rescanFor && (await allEntries()).find(x => x.id === rescanFor);
+    if (again) {               // second photo of a record already in the collection
+      entry = again;
+      if (photo2Urls.has(entry.id)) { URL.revokeObjectURL(photo2Urls.get(entry.id)); photo2Urls.delete(entry.id); }
+      entry.photo2 = photo; entry.source = 'photo';
+      delete entry.guess; delete entry.release; delete entry.choices; delete entry.error;
+      entry.status = 'identifying';
+    } else entry = { id: newId(), scannedAt, source: 'photo', status: 'identifying', photo };
+    if (rescanFor) endRescan();
     saveEntry(entry);  // saved immediately; finished in the background
     const working = identify(entry, await blobToBase64(small)); // starts now, never waits for the page
     // Let the crosshair flash be seen before the album slides up (identifying takes longer anyway)
@@ -246,8 +255,20 @@ $('#shutter').onclick = async () => {
 function setBusy(on, text) {
   $('#shutter').classList.toggle('busy', on);
   $('#frame').classList.toggle('busy', on);
-  $('#hint').textContent = on ? text : 'Fill the frame with a cover or label';
+  $('#hint').textContent = on ? text : rescanFor ? 'Now photograph the label · tap here to cancel' : 'Fill the frame with a cover or label';
 }
+
+/* Remembered corrections: once you've told the app which release a reading means,
+   the same reading goes straight to your choice next time. Kept on this phone only. */
+const fixKey = g => g?.barcode ? 'bc:' + g.barcode : (g && (g.artist || g.album)) ? norm(g.artist) + '|' + norm(g.album) : '';
+function readFixes() { try { return JSON.parse(localStorage.getItem('lh_fixes') || '{}'); } catch { return {}; } }
+function rememberFix(e, releaseId) {
+  const key = fixKey(e.source === 'barcode' ? { barcode: e.barcode } : e.guess);
+  if (!key) return;
+  const all = readFixes(); all[key] = releaseId;
+  try { localStorage.setItem('lh_fixes', JSON.stringify(all)); } catch { /* storage full: not essential */ }
+}
+const knownFix = g => readFixes()[fixKey(g)] || '';
 
 async function identify(entry, base64) {
   try {
@@ -263,8 +284,15 @@ async function identify(entry, base64) {
       refresh(entry); // show the name now; the tracklist follows
     }
     const g = entry.guess;
-    const params = new URLSearchParams({ artist: g.artist || '', album: g.album || '' });
+    const fixed = knownFix(g);
+    if (fixed) return await findRelease(entry, new URLSearchParams({ id: fixed }), 'remembered');
+    // verify=1: the server only answers confidently when what it found matches what was read
+    const params = new URLSearchParams({ verify: 1, artist: g.artist || '', album: g.album || '' });
     if (g.catalogue_number) params.set('catno', g.catalogue_number);
+    if (g.record_label) params.set('label', g.record_label);
+    if (g.is_compilation) params.set('compilation', '1');
+    let sure = Number(g.confidence ?? 1); if (sure > 1) sure /= 100;
+    if (sure < 0.6) params.set('unsure', '1'); // Gemini itself wasn't sure: offer choices, don't answer
     await findRelease(entry, params, 'photo');
   } catch (e) {
     entry.status = 'error'; entry.error = e.message;
@@ -274,11 +302,36 @@ async function identify(entry, base64) {
 
 async function findRelease(entry, params, by) {
   const j = await api('/api/release?' + params);
+  delete entry.choices;
   if (j.found) {
     entry.release = j.release; entry.status = 'done'; delete entry.error;
     entry.matchBy = by;
+  } else if (j.choices?.length) {
+    entry.status = 'choose'; entry.choices = j.choices; delete entry.release; // not sure: ask, never guess
   } else entry.status = 'notfound';
   saveEntry(entry); refresh(entry);
+}
+
+/* "Scan the label instead": a second photo of the same record re-identifies it,
+   keeping the first photo and the original scan time */
+let rescanFor = null;
+function startRescan(e) {
+  showView('scan');
+  rescanFor = e.id;
+  $('#hint').textContent = 'Now photograph the label · tap here to cancel';
+  $('#hint').classList.add('rescan');
+}
+function endRescan() {
+  rescanFor = null;
+  $('#hint').classList.remove('rescan');
+  if (!busy) setBusy(false);
+}
+$('#hint').addEventListener('click', () => { if (rescanFor) endRescan(); });
+const photo2Urls = new Map();
+function photo2Url(e) {
+  if (!e?.photo2) return '';
+  if (!photo2Urls.has(e.id)) photo2Urls.set(e.id, URL.createObjectURL(e.photo2));
+  return photo2Urls.get(e.id);
 }
 
 // Re-draw whatever is showing this record
@@ -296,7 +349,7 @@ async function retryUnfinished() {
       if (busy && e.id === current?.id) continue;
       if (e.status !== 'identifying' && e.status !== 'error') continue;
       if (e.source === 'barcode') await findRelease(e, new URLSearchParams({ barcode: e.barcode }), 'barcode').catch(() => {});
-      else if (e.photo) await identify(e, await blobToBase64(await shrink(e.photo)));
+      else if (e.photo2 || e.photo) await identify(e, await blobToBase64(await shrink(e.photo2 || e.photo)));
     }
   } finally { retrying = false; }
 }
@@ -339,7 +392,8 @@ async function barcodeScan(code) {
   setBusy(true, 'Barcode ' + code);
   try {
     const { photo } = await capture();
-    const j = await api('/api/release?barcode=' + encodeURIComponent(code));
+    const fixed = knownFix({ barcode: code });
+    const j = await api('/api/release?' + (fixed ? 'id=' + encodeURIComponent(fixed) : 'barcode=' + encodeURIComponent(code)));
     if (!j.found) { $('#hint').textContent = 'Barcode not found — photograph the cover or label'; await new Promise(r => setTimeout(r, 2500)); return; }
     const entry = { id: newId(), scannedAt, source: 'barcode', barcode: code, status: 'done', photo, release: j.release, matchBy: 'barcode' };
     saveEntry(entry); openSheet(entry);
@@ -378,7 +432,8 @@ function renderSheet(e) {
   const details = r ? [r.label, r.catno, r.year, r.format].filter(Boolean).join(' · ') : (g.record_label || '');
   let status = '';
   if (e.status === 'identifying') status = artist ? 'Finding the tracklist…' : 'Reading the record…';
-  if (e.status === 'notfound') status = artist ? 'Couldn’t find a tracklist. Try searching by text below.' : 'Couldn’t recognise this record. Try the label, or search by text below.';
+  if (e.status === 'notfound') status = artist ? 'Couldn’t find this record. Scan the label, or search by title below.' : 'Couldn’t recognise this record. Scan the label, or search by title below.';
+  if (e.status === 'choose') status = 'Not sure which record this is. Pick it below, or scan the label.';
   if (e.status === 'error') status = 'No connection to the record database. It will finish by itself when you’re back online.';
 
   // Slides: the found artwork first, then always your own photo
@@ -387,6 +442,7 @@ function renderSheet(e) {
     ? `<div class="slide"><img src="${esc(r.artwork)}" alt="Found artwork" data-cover="${esc(e.id)}" data-no-photo="1"${r.artworkAlt ? ` data-alt="${esc(r.artworkAlt)}"` : ''}></div>`
     : `<div class="slide">${e.photo && !r ? `<img src="${esc(photoUrl(e))}" alt="">` : typoCover(e)}</div>`);
   if (e.photo && (r?.artwork || r)) slides.push(`<div class="slide"><img src="${esc(photoUrl(e))}" alt="Your photo"><span class="tag mono">Your photo</span></div>`);
+  if (e.photo2) slides.push(`<div class="slide"><img src="${esc(photo2Url(e))}" alt="Your second photo"><span class="tag mono">Your second photo</span></div>`);
 
   const tracks = r?.tracks || [];
   let lastSide = '';
@@ -404,18 +460,27 @@ function renderSheet(e) {
       <div class="slides">${slides.join('')}</div>
       <div class="dots">${slides.length > 1 ? slides.map((_, i) => `<i class="${i ? '' : 'on'}"></i>`).join('') : ''}</div>
     </div>
-    ${details ? `<p class="meta mono">${esc(details)}</p>` : ''}
+    ${e.status === 'choose' ? '<p class="meta mono">Read from your photo</p>' : details ? `<p class="meta mono">${esc(details)}</p>` : ''}
     <h2 class="artist">${esc(artist || (e.status === 'identifying' ? '…' : 'Unknown'))}</h2>
     <h3 class="title">${esc(title)}</h3>
     ${status ? `<p class="status mono ${e.status === 'error' ? 'err' : ''}">${esc(status)}</p>` : ''}
     ${e.status === 'error' ? '<button class="btn" data-act="retry" style="margin-top:12px">Try again</button>' : ''}
     ${e.status === 'notfound' && artist ? `<a class="btn album-yt" href="${youtubeUrl(artist, title, '')}" target="_blank" rel="noopener">${PLAY} Search YouTube for the album</a>` : ''}
+    ${e.status === 'choose' ? `<section class="choose">
+      <h4>Which one is it?</h4>
+      <ul class="cands">${e.choices.map(c => `<li><button data-pick="${esc(c.id)}">
+        <span class="cthumb"><img src="${esc(c.thumb)}" alt="" data-thumb-alt="${esc(c.thumbAlt || '')}" onerror="if(this.dataset.thumbAlt&&this.src!==this.dataset.thumbAlt){this.src=this.dataset.thumbAlt}else{this.remove()}"></span>
+        <span class="ctext"><b>${esc(c.title)}</b><span>${esc(c.artist)}</span>
+        <span class="mono">${esc([c.year, c.format, c.label, c.catno].filter(Boolean).join(' · '))}</span></span>
+      </button></li>`).join('')}</ul>
+    </section>` : ''}
     ${tracks.length ? `<p class="lead mono"><span>Tap a track to hear it on YouTube</span>${PLAY}</p><ol class="tracks">${rows}</ol>` : ''}
     <p class="when mono">${e.sample ? 'Sample record · ' : 'Scanned '}${esc(when(e.scannedAt))}</p>
 
     <section class="override">
-      <h4>Wrong record?</h4>
-      <p class="mono quiet" style="margin-top:4px">Search by title and artist instead</p>
+      <h4>${e.status === 'choose' || e.status === 'notfound' ? 'None of these?' : 'Wrong record?'}</h4>
+      ${e.sample ? '' : `<button class="btn rescan" data-act="rescan">Scan the label instead</button>
+      <p class="mono quiet" style="margin-top:14px">Or search by title and artist</p>`}
       <form data-form="override">
         <input name="title" placeholder="Title" value="${esc(title)}" autocomplete="off" enterkeyhint="search">
         <input name="artist" placeholder="Artist" value="${esc(artist)}" autocomplete="off" enterkeyhint="search">
@@ -445,8 +510,9 @@ sheet.addEventListener('click', async ev => {
   if (act === 'retry') {
     e.status = 'identifying'; renderSheet(e);
     if (e.source === 'barcode') findRelease(e, new URLSearchParams({ barcode: e.barcode }), 'barcode').catch(() => {});
-    else identify(e, await blobToBase64(await shrink(e.photo)));
+    else identify(e, await blobToBase64(await shrink(e.photo2 || e.photo)));
   }
+  if (act === 'rescan') { startRescan(e); return; }
   if (act === 'delete') {
     if (t.dataset.armed) { await removeEntry(e.id); closeSheet(); if (view === 'collection') renderCollection(); }
     else { t.dataset.armed = '1'; t.textContent = 'Tap again to remove'; t.style.color = 'var(--red)'; }
@@ -480,6 +546,7 @@ async function pickCandidate(e, id) {
   if (list) list.innerHTML = '<li class="mono quiet" style="padding:12px 0">Loading tracklist…</li>';
   try {
     await findRelease(e, new URLSearchParams({ id }), 'manual');
+    rememberFix(e, id); // next time this reading goes straight here
     sheet.scrollTo({ top: 0, behavior: 'smooth' });
   } catch (err) {
     if (list) list.innerHTML = `<li class="mono" style="padding:12px 0;color:var(--red)">${esc(err.message)}</li>`;
@@ -745,7 +812,7 @@ function renderInfo(e) {
   if (!e) return;
   $('#crateInfo').innerHTML = `<div class="a">${esc(displayArtist(e) || '…')}</div>
     <div class="t">${esc(displayTitle(e))}</div>
-    <div class="w mono">${esc(e.sample ? 'Sample record' : when(e.scannedAt))}</div>`;
+    <div class="w mono">${esc((e.status === 'choose' || e.status === 'notfound') ? 'Needs checking · tap to choose' : e.sample ? 'Sample record' : when(e.scannedAt))}</div>`;
   $('#crateInfo').querySelectorAll('.a, .t').forEach(marquee);
 }
 
@@ -815,7 +882,8 @@ function renderList(restore = false) {
   listEl.innerHTML = shown.map(e => {
     const r = e.release || {};
     // sorted by Date: show when it was scanned, so the order makes sense at a glance
-    const meta = sortBy === 'date' ? when(e.scannedAt) : [r.year, r.label, r.format].filter(Boolean).join(' · ');
+    const meta = (e.status === 'choose' || e.status === 'notfound') ? 'Needs checking'
+      : sortBy === 'date' ? when(e.scannedAt) : [r.year, r.label, r.format].filter(Boolean).join(' · ');
     const letter = alpha ? letterOf(sortBy === 'title' ? displayTitle(e) : displayArtist(e)) : '';
     return `<li data-letter="${letter}"><div class="swipe">
       <button class="rowmain" data-open="${esc(e.id)}">
