@@ -316,10 +316,17 @@ const cam = createCrate(camEl, {
   captureOn: ev => ev.target.closest('.sleeve'),
   onDown: () => camActive(true),
   onTap: i => openSheet(camEntries[i]),
-  onRest: () => { camAtRest(); camActive(false, 700); }
+  onRest: () => camAtRest()                 // stays open while you browse; see camActive
 });
-// While you use the crate the whole front cover shows; at rest it settles back to half, fading out
+// While you browse the crate it opens out: whole covers, no fade. It stays open until you tap
+// the shutter or anywhere that isn't a record; then it retracts to half covers, fading out.
 let camIdleTimer = 0;
+const camOpen = () => camEl.classList.contains('active');
+addEventListener('pointerdown', ev => {
+  if (!camOpen() || view !== 'scan' || sheetOpen()) return;
+  if (ev.target.closest('#camCrate .sleeve, #shutter')) return;   // records keep it open; the shutter handles itself
+  camActive(false);
+}, true);
 function camActive(on, after = 0) {
   clearTimeout(camIdleTimer);
   if (on) camEl.classList.add('active');
@@ -454,6 +461,7 @@ async function api(path, opts) {
 // The shutter is also the way back to the camera: from an album page or from the collection
 $('#shutter').onclick = async () => {
   if (searching()) return closeSearch();
+  if (view === 'scan' && !sheetOpen() && camOpen() && !pending) return camActive(false);  // first press closes the open crate
   if (view !== 'scan' || sheetOpen()) return showView('scan');
   if (!cameraLive()) return startCamera();
   if (busy) return;

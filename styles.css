@@ -468,7 +468,7 @@ body.searching .hint, body.searching .frame { opacity: 0; }
   -webkit-mask-size: 100% var(--cc-a, 180px); mask-size: 100% var(--cc-a, 180px);
   transition: -webkit-mask-size .38s cubic-bezier(.2,.8,.2,1), mask-size .38s cubic-bezier(.2,.8,.2,1);
 }
-#scan .camCrate.active { -webkit-mask-size: 100% 100%; mask-size: 100% 100%; }
+#scan .camCrate.active { -webkit-mask-size: 100% 400%; mask-size: 100% 400%; } /* fade pushed far below: no fade at all */
 #scan .camCrate .sleeve { pointer-events: auto; background: rgba(255,255,255,.08); box-shadow: 0 6px 18px rgba(0,0,0,.28); }
 /* White flash inside the brackets when the shutter is pressed */
 .frame .whiteFlash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
