@@ -260,28 +260,26 @@ function layoutVideo() {
     f.width = side + 'px'; f.top = (H - h) / 2 + h / 2 + 'px';
     return;
   }
-  // Brackets: about two-thirds of the width, ending just above the shutter
-  const shutterTop = $('#shutter').getBoundingClientRect().top - 9;           // includes its outer ring
-  const barBottom = $('.topbar').getBoundingClientRect().bottom;
-  const side = Math.round(Math.max(180, Math.min(W * 0.66, 320, H * 0.34)));
-  const fBottom = shutterTop - 26, fTop = fBottom - side, fMid = fTop + side / 2;
-  f.width = side + 'px'; f.top = fMid + 'px';
-  // The sharp picture, centred on the brackets
-  const top = h >= H ? (H - h) / 2 : fMid - h / 2;
-  Object.assign(video.style, { width: w + 'px', height: h + 'px', left: (W - w) / 2 + 'px', top: top + 'px' });
+  // Picture and brackets centred on the screen, as before; brackets about two-thirds of the width
+  Object.assign(video.style, { width: w + 'px', height: h + 'px', left: (W - w) / 2 + 'px', top: (H - h) / 2 + 'px' });
   video.classList.toggle('fadeY', h < H - 1);
-  video.classList.toggle('fadeX', false);
-  video.style.setProperty('--fade', Math.max(40, Math.min(fTop - top, top + h - fBottom) - 2) + 'px');
-  // The crate fills the space between the top bar and the brackets, with a caption line under it
-  const ccTop = barBottom + 8, ccBottom = fTop - 30;
-  const ccH = Math.max(120, ccBottom - ccTop);
-  const s = Math.round(Math.min(W * 0.5, ccH / 1.62));                          // front record + 2–3 behind
+  video.classList.toggle('fadeX', w < W - 1 && !(h < H - 1));
+  const side = Math.round(Math.max(180, Math.min(W * 0.66, 360, h - 32)));
+  const fTop = H / 2 - side / 2;
+  f.width = side + 'px'; f.top = H / 2 + 'px';
+  video.style.setProperty('--fade', Math.max(40, (h < H - 1 ? (h - side) / 2 : (w - side) / 2) - 2) + 'px');
+  // The crate lives in the space between the top bar and the brackets.
+  // Covers at about the Collection crate's size, half showing at rest.
+  const barBottom = $('.topbar').getBoundingClientRect().bottom;
+  const ccTop = barBottom + 4;
+  camA = Math.max(100, fTop - 10 - ccTop);
+  const s = Math.round(Math.min(W * 0.7, 360, H * 0.32, (camA - 48) * 2));   // leave room for the stacked edges
   root.setProperty('--cc-top', ccTop + 'px');
-  root.setProperty('--cc-h', ccH + 'px');
+  root.setProperty('--cc-a', camA + 'px');                                  // the resting (faded) area
+  root.setProperty('--cc-h', (camA + s * 0.56) + 'px');                     // room for the whole cover while in use
+  root.setProperty('--cc-fade', Math.round(s * 0.32) + 'px');
   camEl.style.setProperty('--s', s + 'px');
-  root.setProperty('--ci-top', (ccBottom + 8) + 'px');
-  $('#hint').style.bottom = (H - fBottom - 22) + 'px';                         // a small line between brackets and shutter
-  $('#hint').style.top = 'auto';
+  $('#hint').style.bottom = $('#hint').style.top = '';
   if (cam.sleeves.length && view === 'scan') cam.layout();
 }
 video.addEventListener('loadedmetadata', layoutVideo);
@@ -294,21 +292,37 @@ addEventListener('orientationchange', () => setTimeout(layoutVideo, 300));
    The same crate engine as the Collection, oldest at the top and the newest scan at
    the front (bottom). It's a layer over the live camera: the camera never stops.
    ========================================================= */
-const camEl = $('#camCrate'), camInfo = $('#camInfo');
-let camEntries = [], camSig = '';
+const camEl = $('#camCrate');
+let camEntries = [], camSig = '', camA = 180;   // camA: height of the crate's resting area, above the brackets
+const CAM_P = 1500, CAM_LEAN = 74;
 const cam = createCrate(camEl, {
-  focusTop: (H, s) => H - s,                   // the record in front sits at the bottom of the crate
-  range: [-4, 2],
-  onFocus: i => showCamInfo(camEntries[i]),
+  focusTop: (H, s) => camA - s / 2,          // at rest, the front record shows its top half
+  range: [-7, 2],
+  stepK: 0.05,                               // a tight stack: a thin top edge per record behind
+  // Looking down into the crate: records behind lean well back, each showing just its top edge
+  // a few pixels above the one in front. Worked out exactly, perspective included.
+  pose: (d, a, k, s) => {
+    if (d <= 0) {
+      const ang = Math.min(CAM_LEAN + 6, CAM_LEAN * k + 3 * (a - k)), r = ang * Math.PI / 180;
+      const z = (s * Math.sin(CAM_LEAN * Math.PI / 180) + 12) * a;            // pushed back: keeps Safari's depth order right
+      const h = s * Math.cos(r) * CAM_P / (CAM_P + s * Math.sin(r) + z);     // its height on screen once leaned back
+      const gap = s * 0.05 * (k + 0.85 * (a - k));                            // how much of its top edge shows
+      const y = h - s - gap;                                                  // top edge sits just above the next record
+      return [`translate3d(0,${y}px,0) perspective(${CAM_P}px) translateZ(${-z}px) rotateX(${ang}deg)`, d < -0.05 ? Math.min(0.1 * a, 0.45) : 0];
+    }
+    return [`translate3d(0,${a * s * 0.2 + s * 0.22 * k}px,0) perspective(${CAM_P}px) translateZ(${k}px) rotateX(${-70 * k}deg)`, 0];
+  },
+  captureOn: ev => ev.target.closest('.sleeve'),
+  onDown: () => camActive(true),
   onTap: i => openSheet(camEntries[i]),
-  onRest: () => camAtRest()
+  onRest: () => { camAtRest(); camActive(false, 700); }
 });
-function showCamInfo(e) {
-  if (!e) { camInfo.textContent = ''; return; }
-  const a = displayArtist(e), t = displayTitle(e);
-  camInfo.textContent = e.status === 'identifying' ? (a ? `${a} — finding tracks…` : 'Reading…')
-    : needsCheck(e) ? (a || t ? `${a || 'Unknown'} — ${t || 'needs checking'}` : 'Unknown record — needs checking')
-    : [a, t].filter(Boolean).join(' — ');
+// While you use the crate the whole front cover shows; at rest it settles back to half, fading out
+let camIdleTimer = 0;
+function camActive(on, after = 0) {
+  clearTimeout(camIdleTimer);
+  if (on) camEl.classList.add('active');
+  else camIdleTimer = setTimeout(() => { if (!cam.drag && !cam.anim) camEl.classList.remove('active'); }, after);
 }
 // Covers you can see get their artwork check, as in the Collection
 function camAtRest() {
@@ -327,7 +341,7 @@ async function renderCam({ keepId, hideId } = {}) {
   camEntries = list;
   if (sig === camSig && cam.sleeves.length) {
     if (Math.abs(cam.metrics.H - camEl.clientHeight) > 1) cam.layout();   // the screen size changed while away
-    showCamInfo(camEntries[cam.focus]); return;
+    return;
   }
   const wasAtFront = !cam.sleeves.length || cam.focus >= cam.sleeves.length - 1;
   const keep = keepId ?? (wasAtFront ? null : camEntries.find((e, i) => i === cam.focus)?.id);
@@ -349,7 +363,6 @@ function camUpdate(e) {
     cam.shades[i] = cam.sleeves[i].querySelector('.shade');
   }
   camSig = camSignature(camEntries);
-  if (i === cam.focus) showCamInfo(e);
 }
 
 /* Placing a new scan in the crate:
@@ -370,12 +383,13 @@ async function placeInCrate(entry, photo, shotAt = performance.now()) {
   flyer.style.visibility = 'hidden'; document.body.append(flyer);
 
   // The crate makes room: the new record is added (hidden) at the front, then the crate glides to it
+  camActive(true);
   const before = cam.sleeves.length ? cam.focus : -1;
   await renderCam({ keepId: camEntries[before]?.id, hideId: entry.id });
   const n = camEntries.length - 1;
   const s = cam.metrics.s || parseFloat(getComputedStyle(camEl).getPropertyValue('--s')) || 160;
   const box = camEl.getBoundingClientRect();
-  const toX = (innerWidth - s) / 2, toY = box.top + cam.metrics.H - s, k = s / fr.width;
+  const toX = (innerWidth - s) / 2, toY = box.top + camA - s / 2, k = s / fr.width;
   const from = `translate(${fr.left}px, ${fr.top}px) scale(1)`;
   const lift = `translate(${fr.left + fr.width * 0.02}px, ${fr.top - 14}px) scale(.96)`;
   const to = `translate(${toX}px, ${toY}px) scale(${k})`;
@@ -393,6 +407,7 @@ async function placeInCrate(entry, photo, shotAt = performance.now()) {
   if (cam.sleeves[n]) cam.sleeves[n].style.opacity = '';
   camSig = camSignature(camEntries);
   requestAnimationFrame(() => { flyer.remove(); URL.revokeObjectURL(url); });
+  camActive(false, 900);
 }
 
 // The photo is exactly what's inside the on-screen brackets: we work out which part of
@@ -933,7 +948,7 @@ function createCrate(el, cfg) {
   };
   c.layout = startAt => {
     if (!c.sleeves.length) return;
-    const H = el.clientHeight, s = c.sleeves[0].offsetWidth, step = s * 0.34;
+    const H = el.clientHeight, s = c.sleeves[0].offsetWidth, step = s * (cfg.stepK || 0.34);
     const top = cfg.focusTop(H, s);
     c.sleeves.forEach(x => x.style.top = top + 'px');
     const keep = startAt ?? (c.focus >= 0 ? c.focus : 0);
@@ -958,6 +973,7 @@ function createCrate(el, cfg) {
       if (!show) continue;
       const k = Math.min(a, 1);
       const y = d * step;
+      if (cfg.pose) { const [t, sh] = cfg.pose(d, a, k, s, step); x.style.transform = t; c.shades[i].style.opacity = sh; continue; }
       if (d <= 0) {
         const angle = Math.min(MAX_LEAN, 48 * k + 4 * (a - k));
         x.style.transform = `translate3d(0,${y}px,0) perspective(${P}px) translateZ(${-depth * a}px) rotateX(${angle}deg)`;
@@ -1035,7 +1051,7 @@ function createCrate(el, cfg) {
     c.stop();                                                // catch the crate where it is
     const d = c.drag = { id: ev.pointerId, y0: ev.clientY, raw0: unband(c.pos), t0: ev.timeStamp, moved: 0,
              wasMoving, target: ev.target.closest('.sleeve'), samples: [{ t: ev.timeStamp, y: ev.clientY }] };
-    el.setPointerCapture(ev.pointerId);
+    (cfg.captureOn?.(ev) || el).setPointerCapture(ev.pointerId);
     cfg.onDown?.();
     if (cfg.onHold && d.target && !wasMoving) d.hold = setTimeout(() => {   // held still for half a second
       if (c.drag !== d || d.moved >= 8) return;

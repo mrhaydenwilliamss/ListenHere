@@ -457,16 +457,19 @@ body.searching .hint, body.searching .frame { opacity: 0; }
 #scan .camCrate {
   position: absolute; z-index: 2; left: 0; right: 0; bottom: auto;
   top: var(--cc-top, 100px); height: var(--cc-h, 280px);
-  overflow: visible;                 /* records pulled forward slide down over the camera */
-  cursor: grab;
+  overflow: visible;
+  pointer-events: none;                /* only the records themselves take touches; the camera stays free */
+  /* At rest: the front record's top half, fading out towards the brackets.
+     In use: the mask opens to show the whole cover. */
+  --mask: linear-gradient(to bottom, #000 0, #000 calc(100% - var(--cc-fade, 80px)), transparent 100%);
+  -webkit-mask-image: var(--mask); mask-image: var(--mask);
+  -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+  -webkit-mask-position: 0 0; mask-position: 0 0;
+  -webkit-mask-size: 100% var(--cc-a, 180px); mask-size: 100% var(--cc-a, 180px);
+  transition: -webkit-mask-size .38s cubic-bezier(.2,.8,.2,1), mask-size .38s cubic-bezier(.2,.8,.2,1);
 }
-#scan .camCrate .sleeve { background: rgba(255,255,255,.08); box-shadow: 0 6px 18px rgba(0,0,0,.28); }
-.camInfo {
-  position: absolute; z-index: 3; left: 16px; right: 16px; top: var(--ci-top, 0); margin: 0;
-  text-align: center; color: #fff; font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 3px rgba(0,0,0,.7);
-  pointer-events: none; transition: opacity .2s ease;
-}
+#scan .camCrate.active { -webkit-mask-size: 100% 100%; mask-size: 100% 100%; }
+#scan .camCrate .sleeve { pointer-events: auto; background: rgba(255,255,255,.08); box-shadow: 0 6px 18px rgba(0,0,0,.28); }
 /* White flash inside the brackets when the shutter is pressed */
 .frame .whiteFlash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
 .frame.flash .whiteFlash { animation: whiteFlash .6s ease-out; }
@@ -476,4 +479,4 @@ body.searching .hint, body.searching .frame { opacity: 0; }
   transform-origin: 0 0; will-change: transform, opacity; box-shadow: 0 14px 40px rgba(0,0,0,.45); }
 .ghost { position: fixed; z-index: 2; /* inside the camera screen, below the brackets */ left: 0; top: 0; object-fit: cover; pointer-events: none; will-change: opacity; }
 /* Landscape keeps the plain camera */
-@media (orientation: landscape) and (max-height: 520px) { #scan .camCrate, .camInfo { display: none; } }
+@media (orientation: landscape) and (max-height: 520px) { #scan .camCrate { display: none; } }
