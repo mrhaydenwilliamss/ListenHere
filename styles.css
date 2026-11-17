@@ -477,6 +477,5 @@ body.searching .hint, body.searching .frame { opacity: 0; }
 /* The photo on its way into the crate (moved by the graphics chip: transform and opacity only) */
 .flyer { position: fixed; z-index: 4; left: 0; top: 0; object-fit: cover; pointer-events: none;
   transform-origin: 0 0; will-change: transform, opacity; box-shadow: 0 14px 40px rgba(0,0,0,.45); }
-.ghost { position: fixed; z-index: 2; /* inside the camera screen, below the brackets */ left: 0; top: 0; object-fit: cover; pointer-events: none; will-change: opacity; }
 /* Landscape keeps the plain camera */
 @media (orientation: landscape) and (max-height: 520px) { #scan .camCrate { display: none; } }

@@ -264,16 +264,16 @@ function layoutVideo() {
   Object.assign(video.style, { width: w + 'px', height: h + 'px', left: (W - w) / 2 + 'px', top: (H - h) / 2 + 'px' });
   video.classList.toggle('fadeY', h < H - 1);
   video.classList.toggle('fadeX', w < W - 1 && !(h < H - 1));
-  const side = Math.round(Math.max(180, Math.min(W * 0.66, 360, h - 32)));
+  const side = Math.round(Math.max(180, Math.min(W - 40, 640, h - 32)));          // nearly full width
   const fTop = H / 2 - side / 2;
   f.width = side + 'px'; f.top = H / 2 + 'px';
   video.style.setProperty('--fade', Math.max(40, (h < H - 1 ? (h - side) / 2 : (w - side) / 2) - 2) + 'px');
   // The crate lives in the space between the top bar and the brackets.
   // Covers at about the Collection crate's size, half showing at rest.
   const barBottom = $('.topbar').getBoundingClientRect().bottom;
-  const ccTop = barBottom + 4;
+  const ccTop = barBottom - 14;                                           // nudged up, tucked under the top bar
   camA = Math.max(100, fTop - 10 - ccTop);
-  const s = Math.round(Math.min(W * 0.7, 360, H * 0.32, (camA - 48) * 2));   // leave room for the stacked edges
+  const s = Math.round(Math.min(W * 0.7, 360, H * 0.32, (camA - 40) * 2));   // leave room for the stacked edges
   root.setProperty('--cc-top', ccTop + 'px');
   root.setProperty('--cc-a', camA + 'px');                                  // the resting (faded) area
   root.setProperty('--cc-h', (camA + s * 0.56) + 'px');                     // room for the whole cover while in use
@@ -293,12 +293,13 @@ addEventListener('orientationchange', () => setTimeout(layoutVideo, 300));
    the front (bottom). It's a layer over the live camera: the camera never stops.
    ========================================================= */
 const camEl = $('#camCrate');
-let camEntries = [], camSig = '', camA = 180;   // camA: height of the crate's resting area, above the brackets
+let camEntries = [], camSig = '', camA = 180;
+let pending = null;   // the latest scan, waiting on its page to go into the crate   // camA: height of the crate's resting area, above the brackets
 const CAM_P = 1500, CAM_LEAN = 74;
 const cam = createCrate(camEl, {
   focusTop: (H, s) => camA - s / 2,          // at rest, the front record shows its top half
   range: [-7, 2],
-  stepK: 0.05,                               // a tight stack: a thin top edge per record behind
+  stepK: 0.34,                               // a drag of about a third of a cover per record, as in the Collection
   // Looking down into the crate: records behind lean well back, each showing just its top edge
   // a few pixels above the one in front. Worked out exactly, perspective included.
   pose: (d, a, k, s) => {
@@ -335,7 +336,7 @@ function camAtRest() {
 }
 const camSignature = list => list.map(e => [e.id, e.release?.artwork || '', e.photo ? 1 : 0].join('|')).join('~');
 // Rebuild only when the set of records (or a cover) has changed; otherwise leave it exactly as it is
-async function renderCam({ keepId, hideId } = {}) {
+async function renderCam({ keepId, hideId = pending?.entry.id } = {}) {
   const list = (await allEntries()).reverse();                 // oldest first: the newest ends up in front
   const sig = camSignature(list) + (hideId || '');
   camEntries = list;
@@ -344,7 +345,8 @@ async function renderCam({ keepId, hideId } = {}) {
     return;
   }
   const wasAtFront = !cam.sleeves.length || cam.focus >= cam.sleeves.length - 1;
-  const keep = keepId ?? (wasAtFront ? null : camEntries.find((e, i) => i === cam.focus)?.id);
+  let keep = keepId ?? (wasAtFront ? null : camEntries.find((e, i) => i === cam.focus)?.id);
+  if (hideId && !keep) keep = list[list.findIndex(e => e.id === hideId) - 1]?.id;  // a record waiting to go in: stay on the one before it
   camSig = sig;
   cam.build(list.map(sleeveHtml).join(''));
   if (hideId) { const i = list.findIndex(e => e.id === hideId); if (cam.sleeves[i]) cam.sleeves[i].style.opacity = '0'; }
@@ -365,48 +367,41 @@ function camUpdate(e) {
   camSig = camSignature(camEntries);
 }
 
-/* Placing a new scan in the crate:
-   the brackets flash white, the photo lifts off the camera and travels up into the front
-   of the crate while what was in front leans back to make room. Two seconds in all,
-   the camera running the whole time. Only transform and opacity animate. */
-async function placeInCrate(entry, photo, shotAt = performance.now()) {
-  const url = URL.createObjectURL(photo);
+/* Placing a new scan in the crate, once you leave its page (× or the shutter):
+   the cover rises out of the brackets and into the front of the crate, while what was
+   in front leans back to make room. The camera keeps running throughout. Only transform
+   and opacity animate. */
+async function placeInCrate(p) {
+  const entry = p.entry;
   const fr = $('#frame').getBoundingClientRect();
-  const img = () => { const el = new Image(); el.src = url; el.alt = ''; el.decoding = 'sync';
-    Object.assign(el.style, { width: fr.width + 'px', height: fr.height + 'px' }); return el; };
-  // what was captured stays in the brackets for a moment, then fades back to the live camera
-  const ghost = img(); ghost.className = 'ghost';
-  ghost.style.transform = `translate(${fr.left}px, ${fr.top}px)`;
-  const flyer = img(); flyer.className = 'flyer';
-  await Promise.all([ghost.decode?.().catch(() => {}), flyer.decode?.().catch(() => {})]);
-  scanEl.append(ghost);              // under the brackets, so the white flash shows over it
-  flyer.style.visibility = 'hidden'; document.body.append(flyer);
+  let url = '';
+  const flyer = new Image(); flyer.alt = ''; flyer.className = 'flyer';
+  Object.assign(flyer.style, { width: fr.width + 'px', height: fr.height + 'px', opacity: '0' });
+  const usePhoto = () => { url = URL.createObjectURL(p.photo); flyer.src = url; return flyer.decode().catch(() => {}); };
+  // the found cover if there is one, otherwise your photo
+  if (entry.release?.artwork) { flyer.src = entry.release.artwork; await flyer.decode().catch(usePhoto); }
+  else await usePhoto();
+  document.body.append(flyer);
 
-  // The crate makes room: the new record is added (hidden) at the front, then the crate glides to it
   camActive(true);
-  const before = cam.sleeves.length ? cam.focus : -1;
-  await renderCam({ keepId: camEntries[before]?.id, hideId: entry.id });
-  const n = camEntries.length - 1;
+  await renderCam({ hideId: entry.id });       // the crate sits on the record before it
+  pending = null;
+  const n = camEntries.findIndex(e => e.id === entry.id);
   const s = cam.metrics.s || parseFloat(getComputedStyle(camEl).getPropertyValue('--s')) || 160;
   const box = camEl.getBoundingClientRect();
   const toX = (innerWidth - s) / 2, toY = box.top + camA - s / 2, k = s / fr.width;
   const from = `translate(${fr.left}px, ${fr.top}px) scale(1)`;
   const lift = `translate(${fr.left + fr.width * 0.02}px, ${fr.top - 14}px) scale(.96)`;
   const to = `translate(${toX}px, ${toY}px) scale(${k})`;
-  // the photo lifts off once the flash has peaked
-  await new Promise(r => setTimeout(r, Math.max(0, 340 - (performance.now() - shotAt))));
-  flyer.style.visibility = '';
   const fly = flyer.animate(
-    [{ transform: from, offset: 0 }, { transform: lift, offset: 0.14 }, { transform: to, offset: 1 }],
-    { duration: 1250, easing: 'cubic-bezier(.45,0,.15,1)', fill: 'both' });
-  ghost.animate([{ opacity: 0.92 }, { opacity: 0 }], { duration: 2000, easing: 'cubic-bezier(.3,0,.2,1)', fill: 'forwards' })
-    .finished.then(() => ghost.remove());
-  setTimeout(() => cam.springTo(n * cam.metrics.step, 0, 0.007), 150);   // the old front leans back, unhurried
+    [{ transform: from, opacity: 0, offset: 0 }, { transform: lift, opacity: 1, offset: 0.16 }, { transform: to, opacity: 1, offset: 1 }],
+    { duration: 640, easing: 'cubic-bezier(.45,0,.15,1)', fill: 'both' });
+  setTimeout(() => cam.springTo(n * cam.metrics.step, 0, 0.014), 60);    // the old front leans back
   await fly.finished.catch(() => {});
-  // Land: the real record takes over from the flying photo in the same frame
+  // Land: the real record takes over from the flying cover in the same frame
   if (cam.sleeves[n]) cam.sleeves[n].style.opacity = '';
   camSig = camSignature(camEntries);
-  requestAnimationFrame(() => { flyer.remove(); URL.revokeObjectURL(url); });
+  requestAnimationFrame(() => { flyer.remove(); if (url) URL.revokeObjectURL(url); });
   camActive(false, 900);
 }
 
@@ -486,8 +481,11 @@ $('#shutter').onclick = async () => {
       setTimeout(() => { if (view === 'scan' && !sheetOpen()) openSheet(entry); }, Math.max(0, 260 - (performance.now() - tappedAt)));
       await working;
     } else {
+      pending = { entry, photo };   // kept out of the crate until you leave its page
       setBusy(false);
-      await placeInCrate(entry, photo, tappedAt);   // ready for the next scan as soon as it lands
+      // let the flash be seen, then the page slides up (identifying carries on meanwhile)
+      await new Promise(r => setTimeout(r, Math.max(0, 260 - (performance.now() - tappedAt))));
+      if (view === 'scan' && !sheetOpen()) openSheet(entry);
     }
   } finally {
     busy = false; setBusy(false);
@@ -761,7 +759,11 @@ function closeSheet() {
   document.body.classList.remove('sheetOpen');
   sheet.setAttribute('aria-hidden', 'true');
   $('#collection').classList.remove('withSheet');
-  if (view === 'scan' && video.paused) resumePreview(); // unfreeze the preview
+  if (view === 'scan' && video.paused) resumePreview();
+  if (pending && !pending.placing) {
+    if (view === 'scan') { pending.placing = true; const p = pending; setTimeout(() => placeInCrate(p), 300); } // once the page has slid away
+    else { pending = null; camSig = ''; }   // left for the Collection: it's simply in the crate next time
+  }
 }
 
 function renderSheet(e) {
@@ -883,6 +885,7 @@ async function pickCandidate(e, id) {
 }
 
 async function removeEntry(id) {
+  if (pending?.entry.id === id) pending = null;
   await deleteEntry(id);
   camSig = ''; if (view === 'scan') renderCam();
   if (urls.has(id)) { URL.revokeObjectURL(urls.get(id)); urls.delete(id); }
