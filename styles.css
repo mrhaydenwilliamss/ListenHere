@@ -416,6 +416,7 @@ body.searching .hint, body.searching .frame { opacity: 0; }
   border-bottom: 1px solid var(--rule);
 }
 .swipe::-webkit-scrollbar { display: none; }
+.swipe { overscroll-behavior-x: none; } /* rows don't stretch rightward: that swipe goes back to the camera */
 .rowmain {
   flex: 0 0 100%; scroll-snap-align: start; text-align: left;
   display: grid; grid-template-columns: 60px 1fr; gap: 14px; align-items: center; padding: 10px 20px;

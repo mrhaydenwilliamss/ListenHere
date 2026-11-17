@@ -154,6 +154,51 @@ function endSwipe(ev) {
 scanEl.addEventListener('pointerup', endSwipe);
 scanEl.addEventListener('pointercancel', endSwipe);
 
+// Swipe right anywhere on the collection (crate or list) to slide back to the camera.
+// Rows in the list only swipe left (to Delete), so a rightward swipe always means "back".
+let back = null;
+colEl.addEventListener('touchstart', ev => {
+  back = null;
+  if (view !== 'collection' || sheetOpen() || ev.touches.length > 1 || ev.target.closest('#az, input, .crateMenu')) return;
+  const t = ev.touches[0];
+  back = { x0: t.clientX, y0: t.clientY, on: false, dx: 0, last: [], row: ev.target.closest('.swipe') };
+}, { passive: true });
+colEl.addEventListener('touchmove', ev => {
+  const s = back; if (!s) return;
+  const t = ev.touches[0], dx = t.clientX - s.x0, dy = t.clientY - s.y0;
+  if (!s.on) {
+    if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;              // not sure yet
+    if (Math.abs(dy) >= Math.abs(dx) || dx < 0 || (s.row && s.row.scrollLeft > 2)) { back = null; return; }
+    // (up/down scrolls; leftward opens a row's Delete; an open row closes as usual)
+    s.on = true;
+    if (drag) { const d = drag; drag = null; clearTimeout(d.hold); release(0); } // the crate lets go of this finger
+    hideCrateMenu();
+    scanEl.classList.add('active', 'sliding'); colEl.classList.add('sliding');
+    ensureCamera();
+  }
+  if (ev.cancelable) ev.preventDefault();
+  s.dx = Math.max(0, dx);
+  s.last.push({ t: ev.timeStamp, x: t.clientX }); if (s.last.length > 5) s.last.shift();
+  colEl.style.transform = `translateX(${s.dx}px)`;
+  scanEl.style.transform = `translateX(${(s.dx - innerWidth) * 0.3}px)`;
+}, { passive: false });
+function endBack() {
+  const s = back; back = null; if (!s || !s.on) return;
+  const a = s.last[0], b = s.last[s.last.length - 1];
+  const v = a && b && b.t > a.t ? (b.x - a.x) / (b.t - a.t) : 0;     // px per ms, positive = rightward
+  const go = s.dx > innerWidth * 0.3 || v > 0.4;
+  const ease = 'transform .32s cubic-bezier(.2,.8,.2,1)';
+  colEl.style.transition = scanEl.style.transition = ease;
+  colEl.style.transform = go ? `translateX(${innerWidth}px)` : 'translateX(0)';
+  scanEl.style.transform = go ? '' : `translateX(${-innerWidth * 0.3}px)`;
+  setTimeout(() => {
+    for (const el of [colEl, scanEl]) { el.style.transition = el.style.transform = ''; el.classList.remove('sliding'); }
+    if (go) showView('scan'); else scanEl.classList.remove('active');
+  }, 330);
+}
+colEl.addEventListener('touchend', endBack);
+colEl.addEventListener('touchcancel', endBack);
+
 /* =========================================================
    Camera
    ========================================================= */
@@ -580,7 +625,7 @@ function renderSheet(e) {
   const slides = [];
   slides.push(r?.artwork
     ? `<div class="slide"><img src="${esc(r.artwork)}" alt="Found artwork" data-cover="${esc(e.id)}" data-no-photo="1"${r.artworkAlt ? ` data-alt="${esc(r.artworkAlt)}"` : ''}></div>`
-    : `<div class="slide">${e.photo && !r ? `<img src="${esc(photoUrl(e))}" alt="">` : typoCover(e)}</div>`);
+    : `<div class="slide">${e.photo && !r ? `<img src="${esc(photoUrl(e))}" alt="Your photo"><span class="tag mono">Your photo</span>` : typoCover(e)}</div>`);
   if (e.photo && r) slides.push(`<div class="slide"><img src="${esc(photoUrl(e))}" alt="Your photo"><span class="tag mono">Your photo</span></div>`);
   if (e.photo2) slides.push(`<div class="slide"><img src="${esc(photo2Url(e))}" alt="Your second photo"><span class="tag mono">Your second photo</span></div>`);
 
