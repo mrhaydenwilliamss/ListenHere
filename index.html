@@ -71,12 +71,14 @@
       <button data-sort="artist">Artist</button>
       <button data-sort="title">Title</button>
       <button data-sort="date">Date</button>
+      <button id="sortDir" class="dir" aria-label="Reverse the order">↓</button>
     </div>
   </header>
 
   <div id="crateWrap">
     <div class="crate" id="crate"></div>
     <div class="crate-info" id="crateInfo"></div>
+    <div class="crateMenu" id="crateMenu" hidden><button class="mono">Remove from collection</button></div>
   </div>
 
   <div id="listWrap" hidden>

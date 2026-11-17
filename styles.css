@@ -382,6 +382,17 @@ body.searching .hint, body.searching .frame { opacity: 0; }
 .sortbar .quiet { margin-right: 6px; }
 .sortbar button { padding: 6px 10px; border: 1px solid var(--rule); letter-spacing: .06em; }
 .sortbar button.on { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.sortbar .dir { margin-left: auto; min-width: 36px; font-size: 15px; line-height: 1; font-family: inherit; }
+/* press-and-hold pop-up in the crate */
+.crateMenu { position: absolute; left: 50%; top: 42%; z-index: 6; transform: translate(-50%, -50%) scale(.92); opacity: 0;
+  transition: opacity .16s ease, transform .16s ease; }
+.crateMenu.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+.crateMenu button { padding: 14px 20px; background: var(--red); color: #fff; letter-spacing: .06em;
+  box-shadow: 0 10px 30px rgba(0,0,0,.35); white-space: nowrap; }
+/* swipe from the camera to the list */
+#scan { touch-action: none; }
+.view.sliding { display: block; will-change: transform; }
+#collection.sliding { z-index: 60; box-shadow: -12px 0 40px rgba(0,0,0,.35); }
 .listArea { position: relative; flex: 1; min-height: 0; }
 /* A–Z index down the right edge: tap or drag to jump */
 .azindex {

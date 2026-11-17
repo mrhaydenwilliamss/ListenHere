@@ -63,6 +63,9 @@ function photoUrl(e) {
 }
 const displayArtist = e => e.release?.artist || e.guess?.artist || '';
 const displayTitle = e => e.release?.title || e.guess?.album || '';
+// what the crate and list show when a scan found nothing
+const shownTitle = e => displayTitle(e) || (e.status === 'identifying' ? '…' : 'Unknown record');
+const needsCheck = e => e.status === 'notfound' || e.status === 'error';
 function typoCover(e) {
   return `<div class="typo"><b>${esc(displayArtist(e) || 'Unknown')}</b><span>${esc(displayTitle(e))}</span></div>`;
 }
@@ -109,6 +112,47 @@ function showView(v) {
   if (v === 'scan') ensureCamera();
 }
 document.querySelectorAll('[data-go]').forEach(b => b.onclick = () => showView(b.dataset.go));
+
+const scanEl = $('#scan'), colEl = $('#collection');
+let swipe = null;
+scanEl.addEventListener('pointerdown', ev => {
+  if (view !== 'scan' || searching() || sheetOpen() || ev.target.closest('button, input, form, .searchPanel')) return;
+  swipe = { id: ev.pointerId, x0: ev.clientX, y0: ev.clientY, t0: ev.timeStamp, on: false, dx: 0, last: [] };
+});
+scanEl.addEventListener('pointermove', ev => {
+  const s = swipe; if (!s || ev.pointerId !== s.id) return;
+  const dx = ev.clientX - s.x0, dy = ev.clientY - s.y0;
+  if (!s.on) {
+    if (Math.abs(dy) > 12 && Math.abs(dy) > Math.abs(dx)) { swipe = null; return; } // an up/down move: not a swipe
+    if (dx > -12) return;
+    s.on = true;                                         // a leftward swipe: bring the list in
+    scanEl.setPointerCapture(ev.pointerId);
+    mode = 'list'; localStorage.setItem('lh_mode', mode);
+    colEl.classList.add('active', 'sliding'); scanEl.classList.add('sliding');
+    renderCollection();
+  }
+  s.dx = Math.min(0, dx);
+  s.last.push({ t: ev.timeStamp, x: ev.clientX }); if (s.last.length > 5) s.last.shift();
+  colEl.style.transform = `translateX(${innerWidth + s.dx}px)`;
+  scanEl.style.transform = `translateX(${s.dx * 0.3}px)`;
+});
+function endSwipe(ev) {
+  const s = swipe; if (!s || ev.pointerId !== s.id) return;
+  swipe = null; if (!s.on) return;
+  const a = s.last[0], b = s.last[s.last.length - 1];
+  const v = a && b && b.t > a.t ? (b.x - a.x) / (b.t - a.t) : 0;     // px per ms, negative = leftward
+  const go = s.dx < -innerWidth * 0.3 || v < -0.4;
+  const ease = 'transform .32s cubic-bezier(.2,.8,.2,1)';
+  colEl.style.transition = scanEl.style.transition = ease;
+  colEl.style.transform = go ? 'translateX(0)' : `translateX(${innerWidth}px)`;
+  scanEl.style.transform = go ? `translateX(${-innerWidth * 0.3}px)` : '';
+  setTimeout(() => {
+    for (const el of [colEl, scanEl]) { el.style.transition = el.style.transform = ''; el.classList.remove('sliding'); }
+    if (go) showView('collection'); else colEl.classList.remove('active');
+  }, 330);
+}
+scanEl.addEventListener('pointerup', endSwipe);
+scanEl.addEventListener('pointercancel', endSwipe);
 
 /* =========================================================
    Camera
@@ -389,6 +433,7 @@ async function identify(entry, base64) {
     if (fixed) return await findRelease(entry, new URLSearchParams({ id: fixed }), 'remembered');
     const params = new URLSearchParams({ artist: g.artist || '', album: g.album || '' });
     if (g.catalogue_number) params.set('catno', g.catalogue_number);
+    if (g.text_on_record) params.set('text', g.text_on_record.slice(0, 200));
     await findRelease(entry, params, 'photo');
   } catch (e) {
     entry.status = 'error'; entry.error = e.message;
@@ -656,8 +701,9 @@ document.querySelectorAll('.seg button').forEach(b => b.onclick = () => {
 });
 
 async function renderCollection() {
-  entries = sortEntries((await allEntries()).filter(e => displayTitle(e) || e.status === 'identifying'));
-  document.querySelectorAll('.sortbar button').forEach(b => b.classList.toggle('on', b.dataset.sort === sortBy));
+  entries = sortEntries(await allEntries()); // every scan stays, found or not, so it can be checked later
+  document.querySelectorAll('.sortbar [data-sort]').forEach(b => b.classList.toggle('on', b.dataset.sort === sortBy));
+  showDir();
   entryById.clear(); entries.forEach(e => entryById.set(e.id, e));
   document.querySelectorAll('.seg button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
   $('#clearSamples').hidden = !entries.some(e => e.sample);
@@ -695,7 +741,7 @@ const P = 1500, MAX_LEAN = 64;             // Cover Flow look
 // A fingerprint of what the crate or list shows. If nothing has changed since it was
 // built, the existing covers are reused as they are (already loaded and drawn) instead
 // of being rebuilt, which is what caused the blank-cover lag on returning.
-const signature = list => sortBy + '#' + list.map(e =>
+const signature = list => sortBy + sortDir + '#' + list.map(e =>
   [e.id, e.release?.artwork || '', displayTitle(e), displayArtist(e), e.photo ? 1 : 0, e.status].join('|')).join('~');
 let crateSig = '', listSig = '';
 
@@ -833,6 +879,15 @@ crate.addEventListener('pointerdown', ev => {
   drag = { id: ev.pointerId, y0: ev.clientY, raw0: unband(pos), t0: ev.timeStamp, moved: 0,
            wasMoving, target: ev.target.closest('.sleeve'), samples: [{ t: ev.timeStamp, y: ev.clientY }] };
   crate.setPointerCapture(ev.pointerId);
+  hideCrateMenu();
+  const d = drag;
+  if (d.target && !wasMoving) d.hold = setTimeout(() => {   // held still for half a second
+    if (drag !== d || d.moved >= 8) return;
+    drag = null;
+    const i = +d.target.dataset.i;
+    springTo(i * metrics.step);
+    showCrateMenu(i);
+  }, 500);
 });
 crate.addEventListener('pointermove', ev => {
   if (!drag || ev.pointerId !== drag.id) return;
@@ -846,7 +901,7 @@ crate.addEventListener('pointermove', ev => {
 });
 function endDrag(ev) {
   if (!drag || ev.pointerId !== drag.id) return;
-  const d = drag; drag = null;
+  const d = drag; drag = null; clearTimeout(d.hold);
   if (d.moved < 8 && ev.timeStamp - d.t0 < 450) {           // a tap, not a drag
     if (d.wasMoving) return release(0);                      // a tap on a moving crate just stops it
     const i = d.target ? +d.target.dataset.i : -1;
@@ -897,9 +952,9 @@ addEventListener('keydown', ev => {
 
 function renderInfo(e) {
   if (!e) return;
-  $('#crateInfo').innerHTML = `<div class="a">${esc(displayArtist(e) || '…')}</div>
-    <div class="t">${esc(displayTitle(e))}</div>
-    <div class="w mono">${esc(e.status === 'notfound' ? 'Needs checking' : e.sample ? 'Sample record' : when(e.scannedAt))}</div>`;
+  $('#crateInfo').innerHTML = `<div class="a">${esc(displayArtist(e) || (e.status === 'identifying' ? '…' : ''))}</div>
+    <div class="t">${esc(shownTitle(e))}</div>
+    <div class="w mono">${esc(needsCheck(e) ? 'Needs checking' : e.sample ? 'Sample record' : when(e.scannedAt))}</div>`;
   $('#crateInfo').querySelectorAll('.a, .t').forEach(marquee);
 }
 
@@ -926,10 +981,44 @@ function marquee(el) {
 
 $('#crateInfo').onclick = () => entries[focusIndex] && openSheet(entries[focusIndex]);
 
+// The pop-up from a press and hold: one button, over the record
+const crateMenu = $('#crateMenu');
+let menuFor = null;
+function showCrateMenu(i) {
+  menuFor = entries[i]; if (!menuFor) return;
+  crateMenu.hidden = false;
+  requestAnimationFrame(() => crateMenu.classList.add('show'));
+}
+function hideCrateMenu() {
+  if (crateMenu.hidden) return;
+  menuFor = null; crateMenu.classList.remove('show');
+  setTimeout(() => { if (!menuFor) crateMenu.hidden = true; }, 160);
+}
+crateMenu.addEventListener('click', async ev => {
+  if (!ev.target.closest('button') || !menuFor) return hideCrateMenu();
+  const e = menuFor, i = entries.indexOf(e);
+  hideCrateMenu();
+  await removeEntry(e.id);
+  lastViewedId = entries[i + 1]?.id || entries[i - 1]?.id || null; // the crate stays where it was
+  renderCollection();
+});
+addEventListener('pointerdown', ev => { if (!crateMenu.hidden && !crateMenu.contains(ev.target)) hideCrateMenu(); }, true);
+
 /* ---------- The list: search as you type, sort, A–Z index, swipe left to delete ---------- */
 const listEl = $('#list'), q = $('#q'), az = $('#az'), bubble = $('#azBubble');
 let sortBy = localStorage.getItem('lh_sort') || 'date'; // newest first, as the brief's crate
-const LETTERS = ['#', ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'];
+// Direction: ↑ ascending (A to Z, oldest first), ↓ descending (Z to A, newest first).
+// Each sort starts the natural way round: A to Z for names, newest first for date.
+const natural = by => by === 'date' ? 'desc' : 'asc';
+let sortDir = localStorage.getItem('lh_dir') || natural(sortBy);
+const dirBtn = $('#sortDir');
+function showDir() { dirBtn.textContent = sortDir === 'asc' ? '↑' : '↓'; dirBtn.setAttribute('aria-label', sortDir === 'asc' ? 'Ascending, tap to reverse' : 'Descending, tap to reverse'); }
+dirBtn.onclick = () => {
+  sortDir = sortDir === 'asc' ? 'desc' : 'asc'; localStorage.setItem('lh_dir', sortDir);
+  listEl.scrollTop = 0; renderCollection();
+};
+const LETTERS_AZ = ['#', ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'];
+let LETTERS = LETTERS_AZ;
 // Filed the way a record shop files them: "The Cure" under C
 const sortText = s => String(s || '').trim().replace(/^(the|a|an)\s+/i, '');
 const letterOf = s => { const c = norm(sortText(s)).charAt(0).toUpperCase(); return /[A-Z]/.test(c) ? c : '#'; };
@@ -938,16 +1027,19 @@ function sortValue(e) {
   if (sortBy === 'date') return e.scannedAt;
   return sortText(displayArtist(e));
 }
-document.querySelectorAll('.sortbar button').forEach(b => b.onclick = () => {
+document.querySelectorAll('.sortbar [data-sort]').forEach(b => b.onclick = () => {
   if (sortBy === b.dataset.sort) return;
-  sortBy = b.dataset.sort; localStorage.setItem('lh_sort', sortBy); listEl.scrollTop = 0; renderCollection();
+  sortBy = b.dataset.sort; sortDir = natural(sortBy);
+  localStorage.setItem('lh_sort', sortBy); localStorage.setItem('lh_dir', sortDir);
+  listEl.scrollTop = 0; renderCollection();
 });
 // One order for both Crate and List: A to Z for artist and title, newest first for date
 function sortEntries(list) {
   const az = (x, y) => x.localeCompare(y, 'en', { sensitivity: 'base', numeric: true });
-  return list.sort((a, b) => sortBy === 'date'
-    ? b.scannedAt.localeCompare(a.scannedAt)
-    : az(sortValue(a), sortValue(b)) || az(sortText(displayTitle(a)), sortText(displayTitle(b))));
+  const flip = sortDir === 'desc' ? -1 : 1;
+  return list.sort((a, b) => flip * (sortBy === 'date'
+    ? a.scannedAt.localeCompare(b.scannedAt)
+    : az(sortValue(a), sortValue(b)) || az(sortText(displayTitle(a)), sortText(displayTitle(b)))));
 }
 
 function renderList(restore = false) {
@@ -969,13 +1061,13 @@ function renderList(restore = false) {
   listEl.innerHTML = shown.map(e => {
     const r = e.release || {};
     // sorted by Date: show when it was scanned, so the order makes sense at a glance
-    const meta = e.status === 'notfound' ? 'Needs checking'
+    const meta = needsCheck(e) ? 'Needs checking'
       : sortBy === 'date' ? when(e.scannedAt) : [r.year, r.label, r.format].filter(Boolean).join(' · ');
     const letter = alpha ? letterOf(sortBy === 'title' ? displayTitle(e) : displayArtist(e)) : '';
     return `<li data-letter="${letter}"><div class="swipe">
       <button class="rowmain" data-open="${esc(e.id)}">
         <span class="cover">${coverImg(e, r.artwork || photoUrl(e))}</span>
-        <span class="txt"><span class="rt">${esc(displayTitle(e) || '…')}</span><span class="ra">${esc(displayArtist(e))}</span><span class="rm mono">${esc(meta)}</span></span>
+        <span class="txt"><span class="rt">${esc(shownTitle(e))}</span><span class="ra">${esc(displayArtist(e))}</span><span class="rm mono">${esc(meta)}</span></span>
       </button>
       <button class="rowdel" data-del="${esc(e.id)}">Delete</button>
     </div></li>`;
@@ -990,6 +1082,7 @@ function renderList(restore = false) {
   listEl.classList.toggle('withIndex', showIndex);
   if (showIndex) {
     const present = new Set([...listEl.children].map(li => li.dataset.letter));
+    LETTERS = sortDir === 'desc' ? LETTERS_AZ.slice().reverse() : LETTERS_AZ;
     az.innerHTML = LETTERS.map(l => `<span data-l="${l}" class="${present.has(l) ? '' : 'off'}">${l}</span>`).join('');
   }
 }
