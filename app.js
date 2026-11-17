@@ -109,7 +109,7 @@ function showView(v) {
   document.body.dataset.view = v;
   closeSheet();
   if (v === 'collection') { if (rescanFor) endRescan(); renderCollection(); }
-  if (v === 'scan') ensureCamera();
+  if (v === 'scan') { ensureCamera(); renderCam(); }
 }
 document.querySelectorAll('[data-go]').forEach(b => b.onclick = () => showView(b.dataset.go));
 
@@ -171,7 +171,7 @@ colEl.addEventListener('touchmove', ev => {
     if (Math.abs(dy) >= Math.abs(dx) || dx < 0 || (s.row && s.row.scrollLeft > 2)) { back = null; return; }
     // (up/down scrolls; leftward opens a row's Delete; an open row closes as usual)
     s.on = true;
-    if (drag) { const d = drag; drag = null; clearTimeout(d.hold); release(0); } // the crate lets go of this finger
+    main.cancelDrag(); cam.cancelDrag();                    // the crates let go of this finger
     hideCrateMenu();
     scanEl.classList.add('active', 'sliding'); colEl.classList.add('sliding');
     ensureCamera();
@@ -240,28 +240,160 @@ document.addEventListener('visibilitychange', () => {
 
 // Size the sharp picture to the camera's own shape, as large as fits ("contain"),
 // fade whichever edges fall short of the screen into the blurred backdrop, and keep
-// the brackets inside the sharp area, near full width.
+// the brackets inside the sharp area.
+// Portrait: the crate sits at the top, the brackets lower down just above the shutter,
+// and the picture is centred on the brackets so the fade runs evenly around them.
+const portrait = () => innerHeight > innerWidth || innerHeight > 520;
 function layoutVideo() {
-  const vw = video.videoWidth, vh = video.videoHeight;
-  if (!vw || !vh) return;
+  const vw = video.videoWidth || 3, vh = video.videoHeight || 4;   // before the camera starts: assume 3:4
   const W = innerWidth, H = innerHeight;
   const scale = Math.min(W / vw, H / vh);
   const w = vw * scale, h = vh * scale;
-  Object.assign(video.style, { width: w + 'px', height: h + 'px', left: (W - w) / 2 + 'px', top: (H - h) / 2 + 'px' });
+  const f = $('#frame').style, root = document.documentElement.style;
+  if (!portrait()) {                                              // landscape: the plain centred camera
+    Object.assign(video.style, { width: w + 'px', height: h + 'px', left: (W - w) / 2 + 'px', top: (H - h) / 2 + 'px' });
+    video.classList.toggle('fadeY', h < H - 1);
+    video.classList.toggle('fadeX', w < W - 1 && !(h < H - 1));
+    const side = Math.max(120, Math.min(w - 32, h - 32, 640));
+    const fade = h < H - 1 ? (h - side) / 2 : (w - side) / 2;
+    video.style.setProperty('--fade', Math.max(48, fade - 2) + 'px');
+    f.width = side + 'px'; f.top = (H - h) / 2 + h / 2 + 'px';
+    return;
+  }
+  // Brackets: about two-thirds of the width, ending just above the shutter
+  const shutterTop = $('#shutter').getBoundingClientRect().top - 9;           // includes its outer ring
+  const barBottom = $('.topbar').getBoundingClientRect().bottom;
+  const side = Math.round(Math.max(180, Math.min(W * 0.66, 320, H * 0.34)));
+  const fBottom = shutterTop - 26, fTop = fBottom - side, fMid = fTop + side / 2;
+  f.width = side + 'px'; f.top = fMid + 'px';
+  // The sharp picture, centred on the brackets
+  const top = h >= H ? (H - h) / 2 : fMid - h / 2;
+  Object.assign(video.style, { width: w + 'px', height: h + 'px', left: (W - w) / 2 + 'px', top: top + 'px' });
   video.classList.toggle('fadeY', h < H - 1);
-  video.classList.toggle('fadeX', w < W - 1 && !(h < H - 1));
-  const side = Math.max(120, Math.min(w - 32, h - 32, 640));
-  // fade from the picture's edge all the way to the brackets
-  const fade = h < H - 1 ? (h - side) / 2 : (w - side) / 2;
-  video.style.setProperty('--fade', Math.max(48, fade - 2) + 'px');
-  const f = $('#frame').style;
-  f.width = side + 'px';
-  f.top = (H - h) / 2 + h / 2 + 'px';
+  video.classList.toggle('fadeX', false);
+  video.style.setProperty('--fade', Math.max(40, Math.min(fTop - top, top + h - fBottom) - 2) + 'px');
+  // The crate fills the space between the top bar and the brackets, with a caption line under it
+  const ccTop = barBottom + 8, ccBottom = fTop - 30;
+  const ccH = Math.max(120, ccBottom - ccTop);
+  const s = Math.round(Math.min(W * 0.5, ccH / 1.62));                          // front record + 2–3 behind
+  root.setProperty('--cc-top', ccTop + 'px');
+  root.setProperty('--cc-h', ccH + 'px');
+  camEl.style.setProperty('--s', s + 'px');
+  root.setProperty('--ci-top', (ccBottom + 8) + 'px');
+  $('#hint').style.bottom = (H - fBottom - 22) + 'px';                         // a small line between brackets and shutter
+  $('#hint').style.top = 'auto';
+  if (cam.sleeves.length && view === 'scan') cam.layout();
 }
 video.addEventListener('loadedmetadata', layoutVideo);
 video.addEventListener('resize', layoutVideo);
 addEventListener('resize', layoutVideo);
 addEventListener('orientationchange', () => setTimeout(layoutVideo, 300));
+
+/* =========================================================
+   The crate on the camera screen
+   The same crate engine as the Collection, oldest at the top and the newest scan at
+   the front (bottom). It's a layer over the live camera: the camera never stops.
+   ========================================================= */
+const camEl = $('#camCrate'), camInfo = $('#camInfo');
+let camEntries = [], camSig = '';
+const cam = createCrate(camEl, {
+  focusTop: (H, s) => H - s,                   // the record in front sits at the bottom of the crate
+  range: [-4, 2],
+  onFocus: i => showCamInfo(camEntries[i]),
+  onTap: i => openSheet(camEntries[i]),
+  onRest: () => camAtRest()
+});
+function showCamInfo(e) {
+  if (!e) { camInfo.textContent = ''; return; }
+  const a = displayArtist(e), t = displayTitle(e);
+  camInfo.textContent = e.status === 'identifying' ? (a ? `${a} — finding tracks…` : 'Reading…')
+    : needsCheck(e) ? (a || t ? `${a || 'Unknown'} — ${t || 'needs checking'}` : 'Unknown record — needs checking')
+    : [a, t].filter(Boolean).join(' — ');
+}
+// Covers you can see get their artwork check, as in the Collection
+function camAtRest() {
+  if (view !== 'scan' || !cam.sleeves.length) return;
+  const f = cam.focus;
+  onScreen.clear();
+  for (let i = Math.max(0, f - 3); i <= Math.min(camEntries.length - 1, f + 1); i++) onScreen.add(camEntries[i].id);
+  wantArt(camEntries[f]);
+  for (let i = f - 1; i >= Math.max(0, f - 3); i--) wantArt(camEntries[i]);
+}
+const camSignature = list => list.map(e => [e.id, e.release?.artwork || '', e.photo ? 1 : 0].join('|')).join('~');
+// Rebuild only when the set of records (or a cover) has changed; otherwise leave it exactly as it is
+async function renderCam({ keepId, hideId } = {}) {
+  const list = (await allEntries()).reverse();                 // oldest first: the newest ends up in front
+  const sig = camSignature(list) + (hideId || '');
+  camEntries = list;
+  if (sig === camSig && cam.sleeves.length) {
+    if (Math.abs(cam.metrics.H - camEl.clientHeight) > 1) cam.layout();   // the screen size changed while away
+    showCamInfo(camEntries[cam.focus]); return;
+  }
+  const wasAtFront = !cam.sleeves.length || cam.focus >= cam.sleeves.length - 1;
+  const keep = keepId ?? (wasAtFront ? null : camEntries.find((e, i) => i === cam.focus)?.id);
+  camSig = sig;
+  cam.build(list.map(sleeveHtml).join(''));
+  if (hideId) { const i = list.findIndex(e => e.id === hideId); if (cam.sleeves[i]) cam.sleeves[i].style.opacity = '0'; }
+  const i = keep ? list.findIndex(e => e.id === keep) : -1;
+  cam.layout(i >= 0 ? i : list.length - 1);
+}
+// A record's details or cover changed: update just that record, no rebuild
+function camUpdate(e) {
+  const i = camEntries.findIndex(x => x.id === e.id);
+  if (i < 0) return;
+  camEntries[i] = e;
+  const img = cam.sleeves[i]?.querySelector('img');
+  const src = e.release?.artwork || photoUrl(e);
+  if (cam.sleeves[i] && (!img || img.getAttribute('src') !== src)) {
+    cam.sleeves[i].innerHTML = coverImg(e, src) + '<i class="shade"></i>';
+    cam.shades[i] = cam.sleeves[i].querySelector('.shade');
+  }
+  camSig = camSignature(camEntries);
+  if (i === cam.focus) showCamInfo(e);
+}
+
+/* Placing a new scan in the crate:
+   the brackets flash white, the photo lifts off the camera and travels up into the front
+   of the crate while what was in front leans back to make room. Two seconds in all,
+   the camera running the whole time. Only transform and opacity animate. */
+async function placeInCrate(entry, photo, shotAt = performance.now()) {
+  const url = URL.createObjectURL(photo);
+  const fr = $('#frame').getBoundingClientRect();
+  const img = () => { const el = new Image(); el.src = url; el.alt = ''; el.decoding = 'sync';
+    Object.assign(el.style, { width: fr.width + 'px', height: fr.height + 'px' }); return el; };
+  // what was captured stays in the brackets for a moment, then fades back to the live camera
+  const ghost = img(); ghost.className = 'ghost';
+  ghost.style.transform = `translate(${fr.left}px, ${fr.top}px)`;
+  const flyer = img(); flyer.className = 'flyer';
+  await Promise.all([ghost.decode?.().catch(() => {}), flyer.decode?.().catch(() => {})]);
+  scanEl.append(ghost);              // under the brackets, so the white flash shows over it
+  flyer.style.visibility = 'hidden'; document.body.append(flyer);
+
+  // The crate makes room: the new record is added (hidden) at the front, then the crate glides to it
+  const before = cam.sleeves.length ? cam.focus : -1;
+  await renderCam({ keepId: camEntries[before]?.id, hideId: entry.id });
+  const n = camEntries.length - 1;
+  const s = cam.metrics.s || parseFloat(getComputedStyle(camEl).getPropertyValue('--s')) || 160;
+  const box = camEl.getBoundingClientRect();
+  const toX = (innerWidth - s) / 2, toY = box.top + cam.metrics.H - s, k = s / fr.width;
+  const from = `translate(${fr.left}px, ${fr.top}px) scale(1)`;
+  const lift = `translate(${fr.left + fr.width * 0.02}px, ${fr.top - 14}px) scale(.96)`;
+  const to = `translate(${toX}px, ${toY}px) scale(${k})`;
+  // the photo lifts off once the flash has peaked
+  await new Promise(r => setTimeout(r, Math.max(0, 340 - (performance.now() - shotAt))));
+  flyer.style.visibility = '';
+  const fly = flyer.animate(
+    [{ transform: from, offset: 0 }, { transform: lift, offset: 0.14 }, { transform: to, offset: 1 }],
+    { duration: 1250, easing: 'cubic-bezier(.45,0,.15,1)', fill: 'both' });
+  ghost.animate([{ opacity: 0.92 }, { opacity: 0 }], { duration: 2000, easing: 'cubic-bezier(.3,0,.2,1)', fill: 'forwards' })
+    .finished.then(() => ghost.remove());
+  setTimeout(() => cam.springTo(n * cam.metrics.step, 0, 0.007), 150);   // the old front leans back, unhurried
+  await fly.finished.catch(() => {});
+  // Land: the real record takes over from the flying photo in the same frame
+  if (cam.sleeves[n]) cam.sleeves[n].style.opacity = '';
+  camSig = camSignature(camEntries);
+  requestAnimationFrame(() => { flyer.remove(); URL.revokeObjectURL(url); });
+}
 
 // The photo is exactly what's inside the on-screen brackets: we work out which part of
 // the camera image sits behind them and crop just that.
@@ -321,8 +453,7 @@ $('#shutter').onclick = async () => {
   const scannedAt = new Date().toISOString(); // the actual moment of scanning
   setBusy(true, 'Reading…');
   try {
-    const { photo, small } = await capture();
-    freezePreview(); // freeze the preview exactly as framed
+    const { photo, small } = await capture();  // the camera keeps running
     let entry;
     const again = rescanFor && (await allEntries()).find(x => x.id === rescanFor);
     if (again) {               // second photo of a record already in the collection
@@ -333,11 +464,16 @@ $('#shutter').onclick = async () => {
       entry.status = 'identifying';
     } else entry = { id: newId(), scannedAt, source: 'photo', status: 'identifying', photo };
     if (rescanFor) endRescan();
-    saveEntry(entry);  // saved immediately; finished in the background
-    const working = identify(entry, await blobToBase64(small)); // starts now, never waits for the page
-    // Let the crosshair flash be seen before the album slides up (identifying takes longer anyway)
-    setTimeout(() => { if (view === 'scan' && !sheetOpen()) openSheet(entry); }, Math.max(0, 260 - (performance.now() - tappedAt)));
-    await working;
+    await saveEntry(entry);  // saved immediately; finished in the background
+    const working = identify(entry, await blobToBase64(small)); // starts now, never waits for the animation
+    if (again) {
+      // "Scan the label instead": back to that record's page, as before
+      setTimeout(() => { if (view === 'scan' && !sheetOpen()) openSheet(entry); }, Math.max(0, 260 - (performance.now() - tappedAt)));
+      await working;
+    } else {
+      setBusy(false);
+      await placeInCrate(entry, photo, tappedAt);   // ready for the next scan as soon as it lands
+    }
   } finally {
     busy = false; setBusy(false);
   }
@@ -521,6 +657,7 @@ function photo2Url(e) {
 // Re-draw whatever is showing this record
 function refresh(entry) {
   if (current?.id === entry.id) renderSheet(entry);
+  camUpdate(entry);
 }
 
 // Finish any scan interrupted by leaving the app or losing signal — no rescan needed
@@ -732,6 +869,7 @@ async function pickCandidate(e, id) {
 
 async function removeEntry(id) {
   await deleteEntry(id);
+  camSig = ''; if (view === 'scan') renderCam();
   if (urls.has(id)) { URL.revokeObjectURL(urls.get(id)); urls.delete(id); }
 }
 
@@ -772,16 +910,204 @@ async function renderCollection() {
    - A touch during momentum catches the crate where it is.
    - Past either end the crate stretches with iOS-style resistance and springs back.
    Only transforms and opacity change per frame (GPU work, no layout). */
-const crate = $('#crate');
-let sleeves = [], shades = [], focusIndex = -1;
-let metrics = { s: 0, step: 0, H: 0, max: 0 };
-let pos = 0;               // how far the crate has moved, in px (record i is centred at i × step)
-let anim = null, animFrame = 0;
-
 const DECEL = 0.998;                       // per ms, as iOS
 const PROJECT = DECEL / (1 - DECEL);       // ms: distance = velocity × this
 const SPRING = 0.016;                      // per ms: critically damped settle (~300 ms)
 const P = 1500, MAX_LEAN = 64;             // Cover Flow look
+// iOS rubber band: past an edge, movement is resisted more the further you pull
+const band = (over, dim) => (1 - 1 / (over * 0.55 / dim + 1)) * dim;
+
+// One crate engine, used twice: the Collection's crate and the camera's crate.
+// cfg.focusTop(H, s): where the record in focus sits; cfg.range: how many records show behind / ahead;
+// cfg.onFocus(i), cfg.onTap(i), cfg.onHold(i), cfg.onRest(), cfg.onDown() are optional hooks.
+function createCrate(el, cfg) {
+  const c = { el, sleeves: [], shades: [], focus: -1, metrics: { s: 0, step: 0, H: 0, max: 0 }, pos: 0, anim: null, drag: null };
+  let frameId = 0;
+  const [BEHIND, AHEAD] = cfg.range || [-5, 3];
+
+  c.build = html => {
+    el.innerHTML = html;
+    c.sleeves = [...el.querySelectorAll('.sleeve')];
+    c.shades = c.sleeves.map(x => x.querySelector('.shade'));
+    c.stop(); c.pos = 0; c.focus = -1;
+  };
+  c.layout = startAt => {
+    if (!c.sleeves.length) return;
+    const H = el.clientHeight, s = c.sleeves[0].offsetWidth, step = s * 0.34;
+    const top = cfg.focusTop(H, s);
+    c.sleeves.forEach(x => x.style.top = top + 'px');
+    const keep = startAt ?? (c.focus >= 0 ? c.focus : 0);
+    c.metrics = { s, step, H, max: (c.sleeves.length - 1) * step };
+    c.pos = keep * step;
+    c.focus = -1; // forces the caption to refresh
+    c.draw();
+    cfg.onRest?.();
+  };
+  // Draw every record for the current position. Called once per frame at most.
+  // Safari note: each record carries its own perspective(), and records behind are pushed
+  // back a full record-depth per step, so 3D depth order always matches stacking order.
+  c.draw = () => {
+    const { s, step } = c.metrics;
+    if (!step) return;
+    const depth = s * Math.sin(MAX_LEAN * Math.PI / 180) + 12;
+    const at = c.pos / step;
+    for (let i = 0; i < c.sleeves.length; i++) {
+      const x = c.sleeves[i], d = i - at, a = Math.abs(d);
+      const show = d >= BEHIND && d <= AHEAD;
+      if (x._show !== show) { x.style.visibility = show ? '' : 'hidden'; x._show = show; }
+      if (!show) continue;
+      const k = Math.min(a, 1);
+      const y = d * step;
+      if (d <= 0) {
+        const angle = Math.min(MAX_LEAN, 48 * k + 4 * (a - k));
+        x.style.transform = `translate3d(0,${y}px,0) perspective(${P}px) translateZ(${-depth * a}px) rotateX(${angle}deg)`;
+        c.shades[i].style.opacity = d < -0.05 ? Math.min(a, 4) * 0.07 : 0;
+      } else {
+        x.style.transform = `translate3d(0,${y + s * 0.22 * k}px,0) perspective(${P}px) translateZ(${k}px) rotateX(${-70 * k}deg)`;
+        c.shades[i].style.opacity = 0;
+      }
+    }
+    const f = Math.max(0, Math.min(c.sleeves.length - 1, Math.round(at)));
+    if (f !== c.focus) { c.focus = f; cfg.onFocus?.(f); }
+  };
+
+  const banded = raw => {
+    const { H, max } = c.metrics;
+    if (raw < 0) return -band(-raw, H);
+    if (raw > max) return max + band(raw - max, H);
+    return raw;
+  };
+  const unband = p => { // inverse of banded, so a new drag starts exactly where the crate is
+    const { H: dim, max } = c.metrics, inv = v => (dim / 0.55) * (1 / (1 - v / dim) - 1);
+    if (p < 0) return -inv(Math.min(-p, dim * 0.999));
+    if (p > max) return max + inv(Math.min(p - max, dim * 0.999));
+    return p;
+  };
+
+  /* ---- animation: momentum decay that lands on a record, or a spring ---- */
+  c.stop = () => { cancelAnimationFrame(frameId); c.anim = null; };
+  function run(a) {
+    c.stop();
+    c.anim = { ...a, t0: performance.now(), x0: c.pos };
+    const frame = now => {
+      const an = c.anim, t = now - an.t0;
+      let x, done = false;
+      if (an.type === 'decay') {
+        x = an.x0 + an.D * (1 - Math.exp(-an.k * t));
+        if (Math.abs(an.x0 + an.D - x) < 0.3) { x = an.x0 + an.D; done = true; }
+      } else {
+        const w = an.w, x0 = an.x0 - an.target;
+        x = an.target + (x0 + (an.v + w * x0) * t) * Math.exp(-w * t);
+        if (t > 60 && Math.abs(x - an.target) < 0.3) { x = an.target; done = true; }
+      }
+      c.pos = x; c.draw();
+      if (done) { c.anim = null; cfg.onRest?.(); } else frameId = requestAnimationFrame(frame);
+    };
+    frameId = requestAnimationFrame(frame);
+  }
+  c.clampIndex = i => Math.max(0, Math.min(c.sleeves.length - 1, i));
+  c.springTo = (target, v = 0, w = SPRING) => run({ type: 'spring', target, v, w });
+  // Release with velocity v (px/ms, in crate direction)
+  c.release = v => {
+    const { step, max } = c.metrics;
+    if (c.pos < 0 || c.pos > max) return c.springTo(c.pos < 0 ? 0 : max, v * 0.3);
+    const projected = c.pos + v * PROJECT;                     // where a natural iOS glide would end
+    let target = c.clampIndex(Math.round(projected / step)) * step;
+    let D = target - c.pos;
+    if (Math.abs(v) > 0.08 && Math.sign(D) === Math.sign(v)) {
+      let k = v / D;                                         // decay that starts at the finger's speed and ends on target
+      if (k > 0.02) {                                        // would stop too abruptly: carry on to the next record
+        const next = c.clampIndex(Math.round(target / step) + Math.sign(v)) * step;
+        if (next !== target) { target = next; D = target - c.pos; k = v / D; }
+      }
+      if (k <= 0.02) return run({ type: 'decay', D, k: Math.max(k, 0.0012) });
+    }
+    c.springTo(target, v);                                   // slow release: settle gently
+  };
+  c.goTo = i => c.springTo(c.clampIndex(i) * c.metrics.step);
+  // Another gesture (the swipe back to the camera) takes over this finger
+  c.cancelDrag = () => { const d = c.drag; if (!d) return; c.drag = null; clearTimeout(d.hold); c.release(0); };
+
+  /* ---- touch, pen and mouse ---- */
+  el.addEventListener('pointerdown', ev => {
+    if (ev.button > 0 || !c.sleeves.length) return;
+    const wasMoving = !!c.anim && (c.anim.type === 'decay' || Math.abs(c.anim.target - c.pos) > 2);
+    c.stop();                                                // catch the crate where it is
+    const d = c.drag = { id: ev.pointerId, y0: ev.clientY, raw0: unband(c.pos), t0: ev.timeStamp, moved: 0,
+             wasMoving, target: ev.target.closest('.sleeve'), samples: [{ t: ev.timeStamp, y: ev.clientY }] };
+    el.setPointerCapture(ev.pointerId);
+    cfg.onDown?.();
+    if (cfg.onHold && d.target && !wasMoving) d.hold = setTimeout(() => {   // held still for half a second
+      if (c.drag !== d || d.moved >= 8) return;
+      c.drag = null;
+      cfg.onHold(+d.target.dataset.i);
+    }, 500);
+  });
+  el.addEventListener('pointermove', ev => {
+    const d = c.drag;
+    if (!d || ev.pointerId !== d.id) return;
+    const events = ev.getCoalescedEvents ? ev.getCoalescedEvents() : [ev];
+    for (const e of events) d.samples.push({ t: e.timeStamp, y: e.clientY });
+    while (d.samples.length > 2 && ev.timeStamp - d.samples[0].t > 100) d.samples.shift();
+    const dy = ev.clientY - d.y0;
+    d.moved = Math.max(d.moved, Math.abs(dy));
+    c.pos = banded(d.raw0 - dy);                             // finger down = crate back, 1:1
+    c.draw();                                                // same frame as the touch
+  });
+  const endDrag = ev => {
+    const d = c.drag;
+    if (!d || ev.pointerId !== d.id) return;
+    c.drag = null; clearTimeout(d.hold);
+    if (d.moved < 8 && ev.timeStamp - d.t0 < 450) {          // a tap, not a drag
+      if (d.wasMoving) return c.release(0);                  // a tap on a moving crate just stops it
+      const i = d.target ? +d.target.dataset.i : -1;
+      if (i < 0) return c.release(0);
+      if (i === c.focus && Math.abs(c.pos - i * c.metrics.step) < 2) return cfg.onTap?.(i);
+      return c.springTo(i * c.metrics.step);
+    }
+    // velocity over the last ~80 ms; a pause before lifting means no fling
+    const last = d.samples[d.samples.length - 1];
+    const recent = d.samples.filter(p => last.t - p.t <= 80);
+    let v = 0;
+    if (ev.timeStamp - last.t < 60 && recent.length > 1) {
+      const first = recent[0];
+      v = -(last.y - first.y) / Math.max(1, last.t - first.t); // crate moves opposite to the finger
+    }
+    c.release(Math.max(-8, Math.min(8, v)));
+  };
+  el.addEventListener('pointerup', endDrag);
+  el.addEventListener('pointercancel', endDrag);
+  el.addEventListener('click', ev => { // keyboard activation only; taps are handled above
+    if (ev.detail !== 0) return;
+    const b = ev.target.closest('.sleeve');
+    if (b) cfg.onTap?.(+b.dataset.i);
+  });
+
+  /* ---- trackpad and mouse wheel (desktop): the system supplies its own momentum ---- */
+  let wheelTimer = 0;
+  el.addEventListener('wheel', ev => {
+    ev.preventDefault();
+    if (!c.sleeves.length) return;
+    c.stop();
+    const unit = ev.deltaMode === 1 ? 40 : ev.deltaMode === 2 ? c.metrics.H : 1;
+    c.pos = Math.max(-40, Math.min(c.metrics.max + 40, c.pos + ev.deltaY * unit));
+    c.draw();
+    clearTimeout(wheelTimer);
+    wheelTimer = setTimeout(() => c.goTo(Math.round(c.pos / c.metrics.step)), 120);
+  }, { passive: false });
+  return c;
+}
+
+/* ---------- The Collection's crate ---------- */
+const crate = $('#crate');
+const main = createCrate(crate, {
+  focusTop: (H, s) => H / 2 - s / 2,
+  onFocus: f => { lastViewedId = entries[f]?.id ?? lastViewedId; renderInfo(entries[f]); },
+  onTap: i => openSheet(entries[i]),
+  onHold: i => { main.goTo(i); showCrateMenu(i); },
+  onDown: () => hideCrateMenu(),
+  onRest: () => crateAtRest()
+});
 
 // A fingerprint of what the crate or list shows. If nothing has changed since it was
 // built, the existing covers are reused as they are (already loaded and drawn) instead
@@ -789,210 +1115,41 @@ const P = 1500, MAX_LEAN = 64;             // Cover Flow look
 const signature = list => sortBy + sortDir + '#' + list.map(e =>
   [e.id, e.release?.artwork || '', displayTitle(e), displayArtist(e), e.photo ? 1 : 0, e.status].join('|')).join('~');
 let crateSig = '', listSig = '';
+const sleeveHtml = (e, i) =>
+  `<button class="sleeve" data-i="${i}" style="z-index:${i + 1}" aria-label="${esc(displayArtist(e))} — ${esc(shownTitle(e))}">${coverImg(e, e.release?.artwork || photoUrl(e))}<i class="shade"></i></button>`;
 
 function renderCrate() {
+  const i = entries.findIndex(e => e.id === lastViewedId);
   const sig = signature(entries);
-  if (sig === crateSig && sleeves.length) {        // nothing changed: just return to the record
-    stopAnim();
-    const i = entries.findIndex(e => e.id === lastViewedId);
-    layoutCrate(i >= 0 ? i : 0);
+  if (sig === crateSig && main.sleeves.length) {   // nothing changed: just return to the record
+    main.stop();
+    main.layout(i >= 0 ? i : 0);
     return;
   }
   crateSig = sig;
-  crate.innerHTML = entries.map((e, i) =>
-    `<button class="sleeve" data-i="${i}" style="z-index:${i + 1}" aria-label="${esc(displayArtist(e))} — ${esc(displayTitle(e))}">${coverImg(e, e.release?.artwork || photoUrl(e))}<i class="shade"></i></button>`
-  ).join('');
-  sleeves = [...crate.querySelectorAll('.sleeve')];
-  shades = sleeves.map(el => el.querySelector('.shade'));
-  stopAnim();
-  pos = 0; focusIndex = -1;
-  const i = entries.findIndex(e => e.id === lastViewedId);
-  layoutCrate(i >= 0 ? i : 0); // come back to the record last viewed
+  main.build(entries.map(sleeveHtml).join(''));
+  main.layout(i >= 0 ? i : 0); // come back to the record last viewed
 }
-function layoutCrate(startAt) {
-  if (!sleeves.length) return;
-  const H = crate.clientHeight, s = sleeves[0].offsetWidth, step = s * 0.34;
-  const top = H / 2 - s / 2;
-  sleeves.forEach(el => el.style.top = top + 'px');
-  const keep = startAt ?? (focusIndex >= 0 ? focusIndex : 0);
-  metrics = { s, step, H, max: (sleeves.length - 1) * step };
-  pos = keep * step;
-  focusIndex = -1; // forces the caption under the crate to refresh
-  draw();
-  crateAtRest();
-}
-addEventListener('resize', () => { if (sleeves.length && !crate.closest('[hidden]')) layoutCrate(); });
+addEventListener('resize', () => { if (main.sleeves.length && !crate.closest('[hidden]')) main.layout(); });
 
-// Draw every record for the current position. Called once per frame at most.
-// Safari note: each record carries its own perspective(), and records above the middle are
-// pushed back a full record-depth per step, so 3D depth order always matches stacking order.
-function draw() {
-  const { s, step } = metrics;
-  if (!step) return;
-  const depth = s * Math.sin(MAX_LEAN * Math.PI / 180) + 12;
-  const at = pos / step;
-  for (let i = 0; i < sleeves.length; i++) {
-    const el = sleeves[i], d = i - at, a = Math.abs(d);
-    const show = d >= -5 && d <= 3;
-    if (el._show !== show) { el.style.visibility = show ? '' : 'hidden'; el._show = show; }
-    if (!show) continue;
-    const k = Math.min(a, 1);
-    const y = d * step;
-    if (d <= 0) {
-      const angle = Math.min(MAX_LEAN, 48 * k + 4 * (a - k));
-      el.style.transform = `translate3d(0,${y}px,0) perspective(${P}px) translateZ(${-depth * a}px) rotateX(${angle}deg)`;
-      shades[i].style.opacity = d < -0.05 ? Math.min(a, 4) * 0.07 : 0;
-    } else {
-      el.style.transform = `translate3d(0,${y + s * 0.22 * k}px,0) perspective(${P}px) translateZ(${k}px) rotateX(${-70 * k}deg)`;
-      shades[i].style.opacity = 0;
-    }
-  }
-  const f = Math.max(0, Math.min(sleeves.length - 1, Math.round(at)));
-  if (f !== focusIndex) { focusIndex = f; lastViewedId = entries[f]?.id ?? lastViewedId; renderInfo(entries[f]); }
-}
-
-// iOS rubber band: past an edge, movement is resisted more the further you pull
-const band = (over, dim) => (1 - 1 / (over * 0.55 / dim + 1)) * dim;
-function banded(raw) {
-  if (raw < 0) return -band(-raw, metrics.H);
-  if (raw > metrics.max) return metrics.max + band(raw - metrics.max, metrics.H);
-  return raw;
-}
-function unband(p) { // inverse of banded, so a new drag starts exactly where the crate is
-  const dim = metrics.H, inv = v => (dim / 0.55) * (1 / (1 - v / dim) - 1);
-  if (p < 0) return -inv(Math.min(-p, dim * 0.999));
-  if (p > metrics.max) return metrics.max + inv(Math.min(p - metrics.max, dim * 0.999));
-  return p;
-}
-
-/* ---- animation: momentum decay that lands on a record, or a spring ---- */
-function stopAnim() { cancelAnimationFrame(animFrame); anim = null; }
 // Once the crate stops, the records you can see (behind and in front of the centre) get their check
 function crateAtRest() {
-  if (!sleeves.length || mode !== 'crate' || view !== 'collection') return;
+  if (!main.sleeves.length || mode !== 'crate' || view !== 'collection') return;
+  const f = main.focus;
   onScreen.clear();
-  for (let i = Math.max(0, focusIndex - 4); i <= Math.min(entries.length - 1, focusIndex + 2); i++) onScreen.add(entries[i].id);
-  for (let i = Math.min(entries.length - 1, focusIndex + 2); i >= Math.max(0, focusIndex - 4); i--) if (i !== focusIndex) wantArt(entries[i]);
-  wantArt(entries[focusIndex]); // the centre record goes first
+  for (let i = Math.max(0, f - 4); i <= Math.min(entries.length - 1, f + 2); i++) onScreen.add(entries[i].id);
+  for (let i = Math.min(entries.length - 1, f + 2); i >= Math.max(0, f - 4); i--) if (i !== f) wantArt(entries[i]);
+  wantArt(entries[f]); // the centre record goes first
 }
-function run(a) {
-  stopAnim();
-  anim = { ...a, t0: performance.now(), x0: pos };
-  const frame = now => {
-    const t = now - anim.t0;
-    let x, done = false;
-    if (anim.type === 'decay') {
-      x = anim.x0 + anim.D * (1 - Math.exp(-anim.k * t));
-      if (Math.abs(anim.x0 + anim.D - x) < 0.3) { x = anim.x0 + anim.D; done = true; }
-    } else {
-      const w = anim.w, x0 = anim.x0 - anim.target;
-      x = anim.target + (x0 + (anim.v + w * x0) * t) * Math.exp(-w * t);
-      if (t > 60 && Math.abs(x - anim.target) < 0.3) { x = anim.target; done = true; }
-    }
-    pos = x; draw();
-    if (done) { anim = null; crateAtRest(); } else animFrame = requestAnimationFrame(frame);
-  };
-  animFrame = requestAnimationFrame(frame);
-}
-const clampIndex = i => Math.max(0, Math.min(sleeves.length - 1, i));
-function springTo(target, v = 0, w = SPRING) { run({ type: 'spring', target, v, w }); }
-
-// Release with velocity v (px/ms, in crate direction)
-function release(v) {
-  const { step, max } = metrics;
-  if (pos < 0 || pos > max) return springTo(pos < 0 ? 0 : max, v * 0.3);
-  const projected = pos + v * PROJECT;                      // where a natural iOS glide would end
-  let target = clampIndex(Math.round(projected / step)) * step;
-  let D = target - pos;
-  if (Math.abs(v) > 0.08 && Math.sign(D) === Math.sign(v)) {
-    let k = v / D;                                          // decay that starts at the finger's speed and ends on target
-    if (k > 0.02) {                                         // would stop too abruptly: carry on to the next record
-      const next = clampIndex(Math.round(target / step) + Math.sign(v)) * step;
-      if (next !== target) { target = next; D = target - pos; k = v / D; }
-    }
-    if (k <= 0.02) return run({ type: 'decay', D, k: Math.max(k, 0.0012) });
-  }
-  springTo(target, v);                                      // slow release: settle gently
-}
-
-/* ---- touch, pen and mouse ---- */
-let drag = null;
-crate.addEventListener('pointerdown', ev => {
-  if (ev.button > 0 || !sleeves.length) return;
-  const wasMoving = !!anim && (anim.type === 'decay' || Math.abs(anim.target - pos) > 2);
-  stopAnim();                                                // catch the crate where it is
-  drag = { id: ev.pointerId, y0: ev.clientY, raw0: unband(pos), t0: ev.timeStamp, moved: 0,
-           wasMoving, target: ev.target.closest('.sleeve'), samples: [{ t: ev.timeStamp, y: ev.clientY }] };
-  crate.setPointerCapture(ev.pointerId);
-  hideCrateMenu();
-  const d = drag;
-  if (d.target && !wasMoving) d.hold = setTimeout(() => {   // held still for half a second
-    if (drag !== d || d.moved >= 8) return;
-    drag = null;
-    const i = +d.target.dataset.i;
-    springTo(i * metrics.step);
-    showCrateMenu(i);
-  }, 500);
-});
-crate.addEventListener('pointermove', ev => {
-  if (!drag || ev.pointerId !== drag.id) return;
-  const events = ev.getCoalescedEvents ? ev.getCoalescedEvents() : [ev];
-  for (const e of events) drag.samples.push({ t: e.timeStamp, y: e.clientY });
-  while (drag.samples.length > 2 && ev.timeStamp - drag.samples[0].t > 100) drag.samples.shift();
-  const dy = ev.clientY - drag.y0;
-  drag.moved = Math.max(drag.moved, Math.abs(dy));
-  pos = banded(drag.raw0 - dy);                              // finger down = crate back, 1:1
-  draw();                                                    // same frame as the touch
-});
-function endDrag(ev) {
-  if (!drag || ev.pointerId !== drag.id) return;
-  const d = drag; drag = null; clearTimeout(d.hold);
-  if (d.moved < 8 && ev.timeStamp - d.t0 < 450) {           // a tap, not a drag
-    if (d.wasMoving) return release(0);                      // a tap on a moving crate just stops it
-    const i = d.target ? +d.target.dataset.i : -1;
-    if (i < 0) return release(0);
-    if (i === focusIndex && Math.abs(pos - i * metrics.step) < 2) return openSheet(entries[i]);
-    return springTo(i * metrics.step);
-  }
-  // velocity over the last ~80 ms; a pause before lifting means no fling
-  const last = d.samples[d.samples.length - 1];
-  const recent = d.samples.filter(p => last.t - p.t <= 80);
-  let v = 0;
-  if (ev.timeStamp - last.t < 60 && recent.length > 1) {
-    const first = recent[0];
-    v = -(last.y - first.y) / Math.max(1, last.t - first.t); // crate moves opposite to the finger
-  }
-  release(Math.max(-8, Math.min(8, v)));
-}
-crate.addEventListener('pointerup', endDrag);
-crate.addEventListener('pointercancel', endDrag);
-crate.addEventListener('click', ev => { // keyboard activation only; taps are handled above
-  if (ev.detail !== 0) return;
-  const b = ev.target.closest('.sleeve');
-  if (b) openSheet(entries[+b.dataset.i]);
-});
-
-/* ---- trackpad and mouse wheel (desktop): the system supplies its own momentum ---- */
-let wheelTimer = 0;
-crate.addEventListener('wheel', ev => {
-  ev.preventDefault();
-  if (!sleeves.length) return;
-  stopAnim();
-  const unit = ev.deltaMode === 1 ? 40 : ev.deltaMode === 2 ? metrics.H : 1;
-  pos = Math.max(-40, Math.min(metrics.max + 40, pos + ev.deltaY * unit));
-  draw();
-  clearTimeout(wheelTimer);
-  wheelTimer = setTimeout(() => springTo(clampIndex(Math.round(pos / metrics.step)) * metrics.step), 120);
-}, { passive: false });
 
 /* ---- keyboard: up / down arrows ---- */
 addEventListener('keydown', ev => {
-  if (view !== 'collection' || mode !== 'crate' || sheetOpen() || !sleeves.length) return;
+  if (view !== 'collection' || mode !== 'crate' || sheetOpen() || !main.sleeves.length) return;
   if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
     ev.preventDefault();
-    springTo(clampIndex(focusIndex + (ev.key === 'ArrowDown' ? 1 : -1)) * metrics.step);
+    main.goTo(main.focus + (ev.key === 'ArrowDown' ? 1 : -1));
   }
-  if (ev.key === 'Enter' && entries[focusIndex]) openSheet(entries[focusIndex]);
+  if (ev.key === 'Enter' && entries[main.focus]) openSheet(entries[main.focus]);
 });
 
 function renderInfo(e) {
@@ -1024,7 +1181,7 @@ function marquee(el) {
   ], { duration: dur * 1000, iterations: Infinity, easing: 'linear' });
 }
 
-$('#crateInfo').onclick = () => entries[focusIndex] && openSheet(entries[focusIndex]);
+$('#crateInfo').onclick = () => entries[main.focus] && openSheet(entries[main.focus]);
 
 // The pop-up from a press and hold: one button, over the record
 const crateMenu = $('#crateMenu');
@@ -1243,7 +1400,8 @@ async function checkNextArt() {
 function showNewArt(e) {
   const src = e.release.artwork || photoUrl(e);
   const i = entries.findIndex(x => x.id === e.id);
-  if (i >= 0 && sleeves[i]) sleeves[i].innerHTML = coverImg(e, src) + '<i class="shade"></i>', shades[i] = sleeves[i].querySelector('.shade');
+  if (i >= 0 && main.sleeves[i]) main.sleeves[i].innerHTML = coverImg(e, src) + '<i class="shade"></i>', main.shades[i] = main.sleeves[i].querySelector('.shade');
+  camUpdate(e);
   const cell = listEl.querySelector(`[data-open="${CSS.escape(e.id)}"] .cover`);
   if (cell) cell.innerHTML = coverImg(e, src);
   if (current?.id === e.id) renderSheet(e);
@@ -1326,5 +1484,7 @@ document.addEventListener('focusout', () => setTimeout(lockViewport, 60));
 /* =========================================================
    Go
    ========================================================= */
+layoutVideo();
+renderCam();
 startCamera();
 retryUnfinished();

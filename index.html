@@ -32,9 +32,13 @@
     <span class="wordmark">LISTEN HERE</span>
     <button class="toCollection" data-go="collection">Collection</button>
   </header>
+  <!-- The crate, live over the camera: newest record at the front (bottom), older ones behind -->
+  <div class="crate camCrate" id="camCrate" aria-label="Your records"></div>
+  <p class="camInfo mono" id="camInfo" aria-live="polite"></p>
   <div class="frame" id="frame" aria-hidden="true">
     <i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i>
     <div class="ring"></div>
+    <div class="whiteFlash"></div>
   </div>
   <button id="startCam" class="startcam" hidden>Tap to start camera</button>
   <!-- Search by text, over the live camera -->

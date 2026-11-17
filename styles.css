@@ -450,3 +450,30 @@ body.searching .hint, body.searching .frame { opacity: 0; }
 @media (min-width: 1200px) {
   .crate { --s: min(30vw, 48vh, 440px); }
 }
+
+/* ---------- The crate on the camera screen ----------
+   Same crate as the Collection, drawn as a layer over the live camera.
+   app.js sets its size and position (--cc-top, --cc-h, --s) with the brackets. */
+#scan .camCrate {
+  position: absolute; z-index: 2; left: 0; right: 0; bottom: auto;
+  top: var(--cc-top, 100px); height: var(--cc-h, 280px);
+  overflow: visible;                 /* records pulled forward slide down over the camera */
+  cursor: grab;
+}
+#scan .camCrate .sleeve { background: rgba(255,255,255,.08); box-shadow: 0 6px 18px rgba(0,0,0,.28); }
+.camInfo {
+  position: absolute; z-index: 3; left: 16px; right: 16px; top: var(--ci-top, 0); margin: 0;
+  text-align: center; color: #fff; font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 3px rgba(0,0,0,.7);
+  pointer-events: none; transition: opacity .2s ease;
+}
+/* White flash inside the brackets when the shutter is pressed */
+.frame .whiteFlash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
+.frame.flash .whiteFlash { animation: whiteFlash .6s ease-out; }
+@keyframes whiteFlash { 8% { opacity: .9; } 25% { opacity: .82; } 100% { opacity: 0; } }
+/* The photo on its way into the crate (moved by the graphics chip: transform and opacity only) */
+.flyer { position: fixed; z-index: 4; left: 0; top: 0; object-fit: cover; pointer-events: none;
+  transform-origin: 0 0; will-change: transform, opacity; box-shadow: 0 14px 40px rgba(0,0,0,.45); }
+.ghost { position: fixed; z-index: 2; /* inside the camera screen, below the brackets */ left: 0; top: 0; object-fit: cover; pointer-events: none; will-change: opacity; }
+/* Landscape keeps the plain camera */
+@media (orientation: landscape) and (max-height: 520px) { #scan .camCrate, .camInfo { display: none; } }
