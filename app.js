@@ -316,10 +316,11 @@ const cam = createCrate(camEl, {
   captureOn: ev => ev.target.closest('.sleeve'),
   onDown: () => camActive(true),
   onTap: i => openSheet(camEntries[i]),
-  onRest: () => camAtRest()                 // stays open while you browse; see camActive
+  onRest: () => { camAtRest(); camActive(false, 2000); }   // untouched for 2 s: retracts
+  , onUp: () => camActive(false, 2000)
 });
-// While you browse the crate it opens out: whole covers, no fade. It stays open until you tap
-// the shutter or anywhere that isn't a record; then it retracts to half covers, fading out.
+// While you browse the crate it opens out: whole covers, no fade. It retracts to half covers,
+// fading out, when you tap the shutter or anywhere that isn't a record, or after 2 s untouched.
 let camIdleTimer = 0;
 const camOpen = () => camEl.classList.contains('active');
 addEventListener('pointerdown', ev => {
@@ -330,7 +331,7 @@ addEventListener('pointerdown', ev => {
 function camActive(on, after = 0) {
   clearTimeout(camIdleTimer);
   if (on) camEl.classList.add('active');
-  else camIdleTimer = setTimeout(() => { if (!cam.drag && !cam.anim) camEl.classList.remove('active'); }, after);
+  else camIdleTimer = setTimeout(() => { if (!cam.drag) camEl.classList.remove('active'); }, after); // not while a finger is on it
 }
 // Covers you can see get their artwork check, as in the Collection
 function camAtRest() {
@@ -768,11 +769,48 @@ function closeSheet() {
   sheet.setAttribute('aria-hidden', 'true');
   $('#collection').classList.remove('withSheet');
   if (view === 'scan' && video.paused) resumePreview();
+  if (camOpen() && !pending) camActive(false, 2000);
   if (pending && !pending.placing) {
     if (view === 'scan') { pending.placing = true; const p = pending; setTimeout(() => placeInCrate(p), 300); } // once the page has slid away
     else { pending = null; camSig = ''; }   // left for the Collection: it's simply in the crate next time
   }
 }
+
+// Swipe down on a record's page (from the top of it) to close it, back to wherever you were.
+// The page follows your finger; let go past a quarter of the screen, or flick, to close.
+let pull = null;
+sheet.addEventListener('touchstart', ev => {
+  pull = null;
+  if (!sheet.classList.contains('open') || ev.touches.length > 1 || innerWidth >= 768 || document.documentElement.classList.contains('kbOpen')) return;
+  if (ev.target.closest('input, textarea')) return;
+  const t = ev.touches[0];
+  pull = { y0: t.clientY, x0: t.clientX, on: false, dy: 0, last: [] };
+}, { passive: true });
+sheet.addEventListener('touchmove', ev => {
+  const p = pull; if (!p) return;
+  const t = ev.touches[0], dy = t.clientY - p.y0, dx = t.clientX - p.x0;
+  if (!p.on) {
+    if (Math.abs(dy) < 6 && Math.abs(dx) < 6) return;
+    if (dy <= 0 || Math.abs(dx) > Math.abs(dy) || sheet.scrollTop > 0) { pull = null; return; } // scrolling, or a sideways swipe
+    p.on = true; sheet.style.transition = 'none';
+  }
+  if (ev.cancelable) ev.preventDefault();
+  p.dy = Math.max(0, dy);
+  p.last.push({ t: ev.timeStamp, y: t.clientY }); if (p.last.length > 5) p.last.shift();
+  sheet.style.transform = `translateY(${p.dy}px)`;
+}, { passive: false });
+function endPull() {
+  const p = pull; pull = null; if (!p || !p.on) return;
+  const a = p.last[0], b = p.last[p.last.length - 1];
+  const v = a && b && b.t > a.t ? (b.y - a.y) / (b.t - a.t) : 0;   // px per ms, positive = downward
+  sheet.style.transition = '';
+  if (p.dy > innerHeight * 0.25 || v > 0.5) {
+    sheet.style.transform = '';
+    closeSheet(); if (view === 'collection') renderCollection();     // same as the ×: back where you were
+  } else sheet.style.transform = '';                                // not far enough: springs back
+}
+sheet.addEventListener('touchend', endPull);
+sheet.addEventListener('touchcancel', endPull);
 
 function renderSheet(e) {
   const r = e.release, g = e.guess || {};
@@ -1085,6 +1123,7 @@ function createCrate(el, cfg) {
     const d = c.drag;
     if (!d || ev.pointerId !== d.id) return;
     c.drag = null; clearTimeout(d.hold);
+    cfg.onUp?.();
     if (d.moved < 8 && ev.timeStamp - d.t0 < 450) {          // a tap, not a drag
       if (d.wasMoving) return c.release(0);                  // a tap on a moving crate just stops it
       const i = d.target ? +d.target.dataset.i : -1;
